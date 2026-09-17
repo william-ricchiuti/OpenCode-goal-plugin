@@ -2,8 +2,8 @@
 
 [![npm version](https://img.shields.io/npm/v/opencode-goal-plugin)](https://www.npmjs.com/package/opencode-goal-plugin)
 [![npm downloads](https://img.shields.io/npm/dm/opencode-goal-plugin)](https://www.npmjs.com/package/opencode-goal-plugin)
-[![CI](https://github.com/willytop8/OpenCode-goal-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/willytop8/OpenCode-goal-plugin/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/willytop8/OpenCode-goal-plugin/actions/workflows/codeql.yml/badge.svg)](https://github.com/willytop8/OpenCode-goal-plugin/actions/workflows/codeql.yml)
+[![CI](https://github.com/william-ricchiuti/OpenCode-goal-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/william-ricchiuti/OpenCode-goal-plugin/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/william-ricchiuti/OpenCode-goal-plugin/actions/workflows/codeql.yml/badge.svg)](https://github.com/william-ricchiuti/OpenCode-goal-plugin/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A session-scoped `/goal` workflow for [OpenCode](https://opencode.ai/).

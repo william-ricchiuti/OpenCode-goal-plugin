@@ -7,7 +7,7 @@ upgrade to the newest patch release before reporting a vulnerability.
 
 ## Reporting a Vulnerability
 
-Use [GitHub's private vulnerability report](https://github.com/willytop8/OpenCode-goal-plugin/security/advisories/new).
+Use [GitHub's private vulnerability report](https://github.com/william-ricchiuti/OpenCode-goal-plugin/security/advisories/new).
 Do **not** open a public issue with exploit details, credentials, local paths, or
 reproduction steps that could expose user data or local system access. If private
 reporting is temporarily unavailable, contact the maintainer through their GitHub
