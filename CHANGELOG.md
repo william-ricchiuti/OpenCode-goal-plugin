@@ -23,7 +23,7 @@
 ## 0.8.2 — 2026-08-21
 
 - Harden the post-compaction goal continuation guard introduced in
-  [#58](https://github.com/willytop8/OpenCode-goal-plugin/pull/58). Building on
+  [#58](https://github.com/william-ricchiuti/OpenCode-goal-plugin/pull/58). Building on
   the epoch-guard groundwork contributed by
   [@harryzhou2000](https://github.com/harryzhou2000), the stalled-compaction
   circuit breaker no longer misfires on two conditions that OpenCode produces in
@@ -52,14 +52,14 @@
   continuation until the user nudged the goal. The claim is now invalidated on
   `session.compacted`, so the loop resumes on the next idle. Contributed by
   [@harryzhou2000](https://github.com/harryzhou2000) in
-  [#58](https://github.com/willytop8/OpenCode-goal-plugin/pull/58).
+  [#58](https://github.com/william-ricchiuti/OpenCode-goal-plugin/pull/58).
 - Update the bundled `zod` dependency from 4.1.8 to 4.4.3.
 
 ## 0.8.0 — 2026-08-06
 
 Both new options in this release were contributed by
 [@harryzhou2000](https://github.com/harryzhou2000) in
-[#53](https://github.com/willytop8/OpenCode-goal-plugin/pull/53).
+[#53](https://github.com/william-ricchiuti/OpenCode-goal-plugin/pull/53).
 
 - Add `noInterruptOnUserMessage` plugin option. When `true`, a new human message steers an active goal — the loop keeps running and the message is included in the next continuation — instead of pausing it with `stopReason: "user intervention"`. The pause-on-intervention default is unchanged.
 - Add `noContinueWhileChildrenActive` plugin option. When `true`, auto-continue is deferred while the session has active child sessions (subagents, background tasks), so the goal loop does not prompt the orchestrator over work a child is already doing; the goal stays running and continues on a later idle once the children finish. A child counts as active only while the host reports a non-idle status for it. Each deferral episode records a `deferred` history event and a status line so `/goal status` distinguishes "waiting on a subagent" from a hung loop. A deferred goal is re-driven by the child's own idle event, since a parent that is already idle emits no event of its own while a child runs. Hosts that cannot report children/status, and sessions with more concurrent children than the plugin can track, fail open and log once per plugin instance.

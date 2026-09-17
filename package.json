@@ -62,14 +62,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/willytop8/OpenCode-goal-plugin.git"
+    "url": "git+https://github.com/william-ricchiuti/OpenCode-goal-plugin.git"
   },
   "bugs": {
-    "url": "https://github.com/willytop8/OpenCode-goal-plugin/issues"
+    "url": "https://github.com/william-ricchiuti/OpenCode-goal-plugin/issues"
   },
-  "homepage": "https://github.com/willytop8/OpenCode-goal-plugin#readme",
+  "homepage": "https://github.com/william-ricchiuti/OpenCode-goal-plugin#readme",
   "author": {
-    "name": "willytop8"
+    "name": "William Ricchiuti"
   },
   "devDependencies": {
     "typescript": "7.0.2"
