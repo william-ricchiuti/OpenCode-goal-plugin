@@ -14,8 +14,9 @@ The latest published release is the supported line. Public compatibility covers:
   single-writer protection retained per session and passive goal behavior for
   a same-session process that does not own the lease
 
-The package requires Node.js 18 or newer and OpenCode 1.17.15 through the latest
-compatible 1.x release. CI runs the complete unit suite on Node 18, 20, 22, and
+The package requires Node.js 18 or newer and OpenCode 1.17.15 or newer,
+including the OpenCode 2 line (see [OpenCode 2](#opencode-2) below for what is
+verified there). CI runs the complete unit suite on Node 18, 20, 22, and
 24. Installed-package contracts compile TypeScript consumers using both NodeNext
 and Bundler resolution and require a clean npm-tarball install to expose the
 default agent-tool surface without a separately installed OpenCode helper package.
@@ -55,18 +56,20 @@ weaker publication protocol.
 
 ## OpenCode host compatibility
 
-OpenCode's experimental hooks and SDK request shapes may change within the 1.x
-line. Automated tests cover both current flattened session inputs and the legacy
-generated-client shape, but a real-host smoke test remains required when hook or
+OpenCode's plugin and SDK request shapes differ between the 1.x and 2.x lines,
+and may still change within a line. Automated tests cover both current flattened
+session inputs and the legacy generated-client shape, and the OpenCode 2
+adapter has its own suite; a real-host smoke test remains required when hook or
 SDK behavior changes. The current manual provider matrix is maintained in
 [providers.md](providers.md).
 
 OpenCode custom commands still become model turns. The plugin handles `/goal`
-arguments in `command.execute.before` and mutates the host-retained parts array
-in place so the turn contains the plugin-generated command result rather than
-raw command text. This makes command routing deterministic, but does not turn the
-hook into a direct-render API: the selected model remains responsible for the
-visible response.
+arguments in `command.execute.before` on OpenCode 1 — where it mutates the
+host-retained parts array in place so the turn contains the plugin-generated
+command result rather than raw command text — and registers the command itself
+on OpenCode 2, submitting that same generated result as the prompt. Both make
+command routing deterministic, but neither turns the hook into a direct-render
+API: the selected model remains responsible for the visible response.
 
 For objective-bearing commands, retained file attachments may be expanded by
 OpenCode into synthetic Read/MCP text and file parts before `chat.message`. The
@@ -83,47 +86,116 @@ remains registered as additional protection for hosts that support it.
 
 ## OpenCode 2
 
-**Status: not supported, and not yet tested.**
+**Status: supported.** Verified against a real OpenCode **2.0.16** host on
+Windows; the V2 hook surface is pinned by `test/v2-bridge.test.js`.
 
-The package declares `engines.opencode` and the `@opencode-ai/plugin` peer as
-`>=1.17.15 <2`. That bound is deliberate: no claim in this repository is made
-without a verified run behind it, and the project has not yet exercised the
-plugin against an OpenCode 2 build. Treat OpenCode 2 as unverified rather than
-as known-broken.
+`engines.opencode` is `>=1.17.15` with no upper bound: one entrypoint serves
+both lines. OpenCode 1 reads `id` + `server` from the default export;
+OpenCode 2 reads `id` + `setup` and ignores `server`. `src/v2-bridge.js`
+adapts OpenCode 2's hook domains onto the V1 hook contract the goal core
+already implements, so the workflow itself (state machine, persistence
+lease, budgets, tool surface, ledger) is shared code rather than a fork.
 
-### What already exists in this direction
+### Verified on a live 2.0.16 host
 
-- `createOpenCodeSessionApi` speaks both the legacy generated-client shape
-  (`{ path, body, query }`) and the flattened shape (`{ sessionID, ... }`),
-  selected per operation and remembered after the first success. The
-  `sdkShape: "flat"` option pins the flattened shape for embedded clients.
-- Only read-only operations are ever replayed against the alternate shape, so a
-  shape probe can never duplicate a mutating call. This invariant is pinned by
-  the mutation contract.
+| Surface | Result |
+| --- | --- |
+| Plugin load through a package spec (`opencode-goal-plugin@0.10.1`) | `state: active` in `GET /api/plugin` |
+| Plugin load through a local `.opencode/plugins/<file>.js` entry | `state: active` |
+| Slash command registered through `ctx.command.transform` | `goal` listed by `GET /api/command` with the plugin's description |
+| Native agents registered through `ctx.agent.transform` | `goal` (primary) and `goal-verify` (subagent, hidden) present in `GET /api/agent` |
+| Config reload | re-arms the deferred command-ownership check via `command.updated` |
 
-### What a supported v2 claim would require
+Verified by tests against the real goal core (not a mock): `setup(ctx)`
+registers every surface the workflow needs, V2 events normalize to the V1
+event contract, transcript/message normalization, the flat session-client
+inputs, and an end-to-end `/goal set` command turn that creates a goal
+instead of being read as user input. The suite runs 439 tests (3 pre-existing
+Windows filesystem failures unrelated to OpenCode 2).
 
-Before the pin is widened, all of the following need to pass against a real
-OpenCode 2 build, not a mock:
+Not yet exercised against a live 2.x provider: a full auto-continue run to
+completion, `completionAudit` child sessions, and the session-title
+indicator. Treat those as unverified until a live-provider row is added.
 
-1. Plugin load and hook registration through the v2 plugin entrypoint.
-2. `command.execute.before`, `event`, `experimental.chat.system.transform`,
-   `experimental.session.compacting`, and `experimental.compaction.autocontinue`
-   firing with the shapes the plugin expects.
-3. The execution-context signals (`chat.message`, `chat.params`,
-   `session.updated`) still reporting the active agent, which the planning-only
-   restriction depends on.
-4. Session-API calls (`messages`, `promptAsync`, `create`, `get`, `update`,
-   `abort`) under whichever argument shape v2 ships.
-5. Goal-specific compaction context and recovery of running child sessions after
-   a plugin restart, which are the areas most likely to differ.
+### Hook mapping
+
+| OpenCode 1 | OpenCode 2 |
+| --- | --- |
+| `chat.message` | `ctx.session.hook("prompt")` (correlation marker carried in prompt metadata) |
+| `chat.params` | `ctx.session.hook("context")` |
+| `experimental.chat.system.transform` | second `ctx.session.hook("context")` editing `event.system` |
+| `experimental.session.compacting` | `ctx.session.hook("compaction")` appending to `event.system` |
+| `experimental.compaction.autocontinue` | none — V2 has no generic post-compaction auto-continue to suppress |
+| `command.execute.before` | `ctx.command.transform`; the executor runs the V1 hook and submits the routed result as the prompt itself |
+| `tool.execute.before` | `ctx.tool.hook("execute.before")` (a throw still blocks the tool) |
+| `event` | `ctx.event.subscribe()` with envelope normalization |
+| `tool` map | `ctx.tool.transform` (Zod v4 is Standard Schema, accepted directly) |
+| `config` agents | `ctx.agent.transform` (`update` upserts) |
+| `dispose` | cleanup function returned by `setup` |
+| `client.session.*` (legacy/flat SDK) | `ctx.session.{context,prompt,get,update,interrupt,create}` behind the same flat contract |
+
+Event normalization, because V2 renamed or removed the V1 event types:
+`session.execution.succeeded` → `session.idle` (the auto-continue driver),
+`session.execution.started` → `session.status: busy`,
+`session.execution.failed` → `session.error`, `session.execution.interrupted`
+→ `session.error` (`MessageAbortedError`), `session.compaction.ended` →
+`session.compacted`, `session.step.ended` → `message.updated` (usage and
+progress), `session.agent.selected`/`session.model.selected` →
+`session.updated`, with `permission.replied`, `session.status`, and
+`session.idle` passed through.
+
+### Divergences from OpenCode 1
+
+1. **Command ownership.** The plugin registers `/goal` itself. OpenCode 2
+   registers config `command`/`commands` entries *after* user plugins, so a
+   legacy `command.goal` entry would otherwise shadow the plugin handler; the
+   bridge re-asserts its registration after activation and logs a warning if a
+   foreign definition still owns the name. Dropping the entry is recommended
+   on V2 — nothing needs to replace it.
+2. **Step failures are not terminal.** V2 retries retryable `session.step.failed`
+   errors; the bridge does not pause a goal on them. Terminal provider errors
+   arrive as `session.execution.failed` and pause as before.
+3. **Message parents.** V2 messages carry no `parentID`. It is derived from
+   transcript order for history reads and from the last admitted prompt for
+   live events, which is what control-command suppression correlates on.
+4. **No `client.app.log`.** V2's plugin context has no structured log API, so
+   advisory warnings and errors use the same console fallback V1 already uses
+   when `app.log` is unavailable; debug-level diagnostics stay silent.
+5. **Completion-audit children.** `session.create` has no `parentID` field on
+   V2, so the bridge records `parentSessionID` in the child's session metadata
+   and echoes it back to satisfy the auditor's integrity check. V2 exposes no
+   session-delete operation to the plugin context, so audit children are not
+   removed afterwards (V1 deleted them when `client.session.delete` existed).
+6. **Agent permission vocabulary.** V1 agent tool maps are translated to
+   ordered V2 rules, emitting both spellings for renamed actions
+   (`bash`→`shell`, `write`/`patch`→`edit`, `task`→`subagent`), with the `*`
+   catch-all first because V2 uses last-match-wins. V2 `Agent.Info` has no
+   `tools` map, so disabled tools become `deny` rules.
+7. **Active-children gate.** `noContinueWhileChildrenActive` reads children
+   and statuses from the event stream (or `session.list`/`session.active` when
+   the host exposes them). Unknown state fails open, as documented for hosts
+   that cannot report children.
+8. **Local checkouts.** A configured plugin *directory* containing a
+   `package.json` is resolved by name and version and installed into OpenCode's
+   npm cache from the registry, so a local checkout is only loaded through a
+   `.opencode/plugins/<file>.js` entry (or after publishing).
 
 ### Configuration
 
 This plugin is **server-only**: `package.json` exports the root and
 `opencode-goal-plugin/server`, and there is no TUI plugin entrypoint. Its
-configuration therefore lives entirely in `opencode.json` (the `plugin` and
-`command` keys) on any OpenCode line.
+configuration therefore lives entirely in `opencode.json` on any OpenCode
+line — `plugin`/`plugins` plus, on OpenCode 1 only, the matching `command`
+entry:
+
+```jsonc
+// OpenCode 1
+{ "plugin": ["opencode-goal-plugin@0.10.1"],
+  "command": { "goal": { "template": "$ARGUMENTS", "agent": "build" } } }
+
+// OpenCode 2 (the command entry is not needed and should be omitted)
+{ "plugins": ["opencode-goal-plugin@0.10.1"] }
+```
 
 Plugins that *do* ship a TUI component are registered in a second file whose
 location differs between OpenCode lines, and those formats must not be mixed.

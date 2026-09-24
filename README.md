@@ -31,7 +31,7 @@ This project is independently implemented for OpenCode. Product names used elsew
 | Operating systems | Filesystem-sensitive lifecycle tests run on Linux, macOS, and Windows |
 | Package entrypoint | Installed-tarball contracts verify both export paths, consumer TypeScript resolution, hooks, and all 11 tools |
 | Provider/backend quirks | Strict-template backends require the goal block to merge into the primary `system` message; covered by regression tests |
-| OpenCode 2 | Not supported and not yet tested; the peer/engine pin is `>=1.17.15 <2`. See the [OpenCode 2 section](docs/compatibility.md#opencode-2) |
+| OpenCode 2 | Supported and verified against OpenCode 2.0.16 (plugin load, `/goal` command, native agents); hook wiring pinned by `test/v2-bridge.test.js`. See the [OpenCode 2 section](docs/compatibility.md#opencode-2) |
 
 See the [compatibility policy](docs/compatibility.md) for the supported public
 surface and versioning expectations.
@@ -59,11 +59,21 @@ Separately, the lifecycle-feedback implementation included in v0.7.0 passed a re
 
 ## Install
 
-OpenCode installs npm plugins itself from your config, so there is nothing to `npm install`. Add the plugin **with a pinned version** and the `goal` command to `opencode.json` (the user config at `~/.config/opencode/opencode.json`, or a project-local `opencode.json`):
+OpenCode installs npm plugins itself from your config, so there is nothing to `npm install`. Add the plugin **with a pinned version** to `opencode.json` (the user config at `~/.config/opencode/opencode.json`, or a project-local `opencode.json`):
+
+**OpenCode 2** — the plugin registers its own command, so no `command` entry is needed:
 
 ```json
 {
-  "plugin": ["opencode-goal-plugin@0.10.0"],
+  "plugins": ["opencode-goal-plugin@0.10.1"]
+}
+```
+
+**OpenCode 1** — the same plugin also needs its `goal` command declared in config:
+
+```json
+{
+  "plugin": ["opencode-goal-plugin@0.10.1"],
   "command": {
     "goal": {
       "description": "Set a session-scoped goal and auto-continue until complete.",
@@ -74,19 +84,21 @@ OpenCode installs npm plugins itself from your config, so there is nothing to `n
 }
 ```
 
-Or let the CLI add the plugin entry for you and then add the `command` block by hand:
+A V1 config keeps working on OpenCode 2 (the `plugin` key is normalized to `plugins`), but its `command.goal` entry is registered *after* plugin commands on V2 and would shadow the plugin handler — remove it. The plugin detects the conflict, re-asserts its own registration, and logs a warning if a foreign definition still owns the name.
+
+Or let the CLI add the plugin entry for you:
 
 ```sh
-opencode plugin opencode-goal-plugin@0.10.0 --global
+opencode plugin opencode-goal-plugin@0.10.1 --global
 ```
 
-Restart OpenCode after editing the config. The options form `["opencode-goal-plugin@0.10.0", { ... }]` (see [Options](#options)) pins the same way.
+Restart OpenCode after editing the config. The options form `["opencode-goal-plugin@0.10.1", { ... }]` (see [Options](#options)) pins the same way.
 
 ### Upgrading
 
 **Pin the version.** OpenCode resolves an unpinned `"opencode-goal-plugin"` entry to `@latest` exactly once, installs it under its package cache (`~/.cache/opencode/packages/opencode-goal-plugin@latest/` by default; `opencode debug paths` prints the cache root), and never re-resolves `latest` while that directory exists. An unpinned entry therefore stays on whichever version was first installed, indefinitely, and new releases on npm are never picked up — a bug fixed months ago can still be running locally.
 
-To upgrade, bump the pin (for example to `opencode-goal-plugin@0.10.0`) and restart OpenCode; every pinned version gets its own cache directory. If you kept an unpinned entry, delete the `opencode-goal-plugin*` directories under the cache `packages/` folder and restart. `npx opencode-goal-plugin` runs the bundled verification script, which warns when the cached copy lags the package.
+To upgrade, bump the pin (for example to `opencode-goal-plugin@0.10.1`) and restart OpenCode; every pinned version gets its own cache directory. If you kept an unpinned entry, delete the `opencode-goal-plugin*` directories under the cache `packages/` folder and restart. `npx opencode-goal-plugin` runs the bundled verification script, which warns when the cached copy lags the package.
 
 ## Usage
 
@@ -359,8 +371,8 @@ Additional plugin-level options:
 - `noInterruptOnUserMessage` — when `true`, a new human message no longer pauses an active goal ("user intervention"); the goal loop keeps running and the message steers the next continuation. Because typing a message no longer stops the loop, `/goal pause` and `/goal stop` become the way to halt it. Default `false`, which pauses for `/goal resume` as before.
 - `noContinueWhileChildrenActive` — when `true`, auto-continue is deferred while the session has active child sessions (subagents, background tasks): the goal stays running but does not prompt the orchestrator until the children finish. A child counts as active only while the host reports a non-idle status for it, and each deferral is reported in `/goal status` and the lifecycle history so a waiting goal is never mistaken for a hung one. Default `false`. Enabling it adds a `children` and a `status` call to each idle the goal loop evaluates. The gate fails open — continuation proceeds — for hosts that cannot report children/status, for sessions with more concurrent children than the plugin can track, and for children that run goals of their own. Note that the gate relies on the child's own idle event to resume, so a host that never emits one leaves the goal waiting; `/goal status` reports the deferral in that case.
 - `warnTurnsRemaining` / `warnDurationMsRemaining` / `warnTokensRemaining` — thresholds at which the auto-continue prompt appends a "limits are near" warning (default `3` turns, `60000` ms, `25000` context tokens). Lower them to warn closer to the limit, or raise them to warn earlier.
-- `commandName` — the slash command the plugin owns (default `goal`). Set it to e.g. `objective` to drive the workflow with `/objective` instead of `/goal`; a leading slash is tolerated. Remember to register the matching command name in your OpenCode `command` config. User-facing hints (`/goal status`, `/goal resume`, …) follow the configured name.
-- `registerCommand` — whether the plugin installs its `command.execute.before` hook at all (default `true`). Set it to `false` if you only want the auto-continue/persistence behavior driven programmatically and don't want the plugin to own a slash command.
+- `commandName` — the slash command the plugin owns (default `goal`). Set it to e.g. `objective` to drive the workflow with `/objective` instead of `/goal`; a leading slash is tolerated. On OpenCode 1, register the matching command name in your OpenCode `command` config; on OpenCode 2 the plugin registers the command itself and no config entry is needed (and a legacy entry with the same name is re-asserted so it cannot shadow the handler). User-facing hints (`/goal status`, `/goal resume`, …) follow the configured name.
+- `registerCommand` — whether the plugin owns its slash command at all (default `true`). On OpenCode 1 this installs the `command.execute.before` hook; on OpenCode 2 it registers the command through `ctx.command.transform`. Set it to `false` if you only want the auto-continue/persistence behavior driven programmatically.
 - `registerTools` — whether the plugin registers the agent-facing goal tools (default `true`). Set to `false` to omit the programmatic tool surface entirely. See [Agent tools](#agent-tools).
 - `agentGoalAuthority` — `"full"` (default) or `"status"`. In `"status"` mode the agent tools can report on a goal but cannot replace, edit, or clear one; see [Agent tools](#agent-tools).
 - `registerAgents` — whether the config hook adds native `goal` and `goal-verify` agents (default `true`). Existing agents with those names are preserved unchanged; the plugin never changes your default agent.
@@ -465,9 +477,9 @@ A planning-only agent is never driven into execution by the goal loop. OpenCode'
 - Auto-continue stays suppressed on **every idle** while a restricted agent is active, so switching into `plan` mid-goal pauses the loop.
 - Continuations retain the agent that started the goal, so the loop cannot drift into a different agent.
 
-The active agent is read from the execution context the host reports for its turns. OpenCode runs `command.execute.before` before any `chat.message`/`chat.params` for the turn, and its session record carries no agent, so for the first command in a session the agent is unknown at creation time. The plugin therefore re-checks when the routed turn reaches `chat.message`, which does carry the agent, and holds the goal there — rewriting the turn into a read-only control turn and blocking tools for it — before the model is told to start.
+The active agent is read from the execution context the host reports for its turns. On OpenCode 1, `command.execute.before` runs before any `chat.message`/`chat.params` for the turn and its session record carries no agent, so for the first command in a session the agent is unknown at creation time. The plugin therefore re-checks when the routed turn reaches `chat.message`, which does carry the agent, and holds the goal there — rewriting the turn into a read-only control turn and blocking tools for it — before the model is told to start. On OpenCode 2 the session record does carry the selected agent, so the session-record fallback resolves it for the first command as well.
 
-**Command configuration matters.** OpenCode runs a custom command under the agent named in its config (`command.goal.agent`) and only falls back to the agent selected in the session when the command sets none. With the install snippet's `"agent": "build"`, the `/goal` turn itself always executes as `build`, so a hold can only come from a *previously* reported planning-only agent (the case verified in the TUI, where you switched to Plan and then typed `/goal`). To have Plan mode hold a goal even on a session's very first turn, omit `agent` from the `goal` command config so the command runs under the selected agent.
+**Command configuration matters (OpenCode 1).** OpenCode runs a custom command under the agent named in its config (`command.goal.agent`) and only falls back to the agent selected in the session when the command sets none. With the install snippet's `"agent": "build"`, the `/goal` turn itself always executes as `build`, so a hold can only come from a *previously* reported planning-only agent (the case verified in the TUI, where you switched to Plan and then typed `/goal`). To have Plan mode hold a goal even on a session's very first turn, omit `agent` from the `goal` command config so the command runs under the selected agent. On OpenCode 2 the plugin owns the command, so it runs under the session's selected agent and this trade-off does not apply.
 
 **What this does and does not prevent.** The restriction stops the *goal loop*: a held goal sends zero auto-continues, so no unattended work happens. It cannot stop a model from acting on the single routed command turn, because OpenCode's `command.execute.before` does not fully intercept command text (see [Limitations](#limitations)). A held goal's routed text explicitly tells the model not to begin work and is sent as a read-only control turn, but a non-compliant model may still act on that one turn. Verified against OpenCode 1.18.25: a goal set under Plan records `stopped: true`, `stopReason: plan agent active`, and `turnCount: 0`.
 
@@ -496,7 +508,7 @@ The goal text is wrapped in `<goal_objective>` tags and labeled as user-provided
 
 The assistant still signals candidate outcomes with `[goal:complete]` or `[goal:blocked]`. Completion can additionally be checked by a custom `auditor` callback or the built-in child-session auditor before the goal becomes terminal. Marker quality therefore remains model-dependent when auditing is disabled, and audit quality depends on the configured verifier model and evidence available in the session. The built-in verifier performs static inspection with `read`, `glob`, and `grep`; it cannot execute shell commands.
 
-OpenCode custom commands are prompts, not direct plugin-rendered TUI responses. After `command.execute.before` runs, OpenCode sends its retained command-parts array through a normal model turn. The plugin mutates that array in place so the model receives the deterministic plugin-generated result instead of the raw `/goal` argument. The model still produces the visible response and may summarize or paraphrase that result.
+OpenCode custom commands are prompts, not direct plugin-rendered TUI responses. On OpenCode 1, after `command.execute.before` runs, OpenCode sends its retained command-parts array through a normal model turn; the plugin mutates that array in place so the model receives the deterministic plugin-generated result instead of the raw `/goal` argument. On OpenCode 2 there is no interception hook, so the plugin registers the command itself and submits that same generated result as the prompt for the turn. Either way the model still produces the visible response and may summarize or paraphrase that result.
 
 Objective-bearing commands preserve file attachments. OpenCode may expand those files into synthetic Read/MCP text and file parts before `chat.message`; the plugin accepts that expansion only when it matches the one-shot command correlation, retained-file count, and generated message/session identity. Other mixed text is treated as a new human instruction and pauses an active loop. If OpenCode reports an attachment-read error during that expansion, the goal pauses with `attachment resolution error` while retaining the correct command provenance.
 

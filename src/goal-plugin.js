@@ -16,6 +16,7 @@ import { homedir } from "node:os"
 import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path"
 import { z } from "zod"
 import { createOpenCodeSessionApi } from "./opencode-session-api.js"
+import { createV2Setup } from "./v2-bridge.js"
 import { applyNativeGoalConfig } from "./native-agent-config.js"
 import { serializeCompletionClaim } from "./completion-claim.js"
 import { goalToolFailure, goalToolSuccess, serializeGoalToolResult } from "./goal-tool-result.js"
@@ -7011,9 +7012,14 @@ export const GoalPlugin = async (context = {}, pluginOptions = {}) => {
   })
 }
 
+// OpenCode 1 loads this package through `server()`; OpenCode 2 requires a
+// default definition with an `id` and a `setup` function and ignores `server`.
+// Supporting both from one entrypoint follows the OpenCode migration guide's
+// dual-export pattern.
 export default {
   id: "opencode-goal-plugin",
   server: GoalPlugin,
+  setup: createV2Setup(GoalPlugin),
 }
 
 export const testInternals = {

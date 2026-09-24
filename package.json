@@ -1,6 +1,6 @@
 {
   "name": "opencode-goal-plugin",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Durable, guarded goal workflows for OpenCode.",
   "type": "module",
   "main": "./src/goal-plugin.js",
@@ -58,7 +58,7 @@
   "license": "MIT",
   "engines": {
     "node": ">=18",
-    "opencode": ">=1.17.15 <2"
+    "opencode": ">=1.17.15"
   },
   "repository": {
     "type": "git",

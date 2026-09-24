@@ -30,6 +30,7 @@ import goalPlugin, {
   type CompletionAuditContext,
   type GoalPluginHooks,
   type GoalPluginOptions,
+  type GoalPluginSetup,
 } from "opencode-goal-plugin"
 import serverPlugin from "opencode-goal-plugin/server"
 
@@ -93,8 +94,17 @@ await hooks.dispose()
 
 const sameServer: typeof GoalPlugin = goalPlugin.server
 const sameExport: typeof goalPlugin = serverPlugin
+// OpenCode 1 reads \`server\`, OpenCode 2 reads \`setup\`; both live on one object.
+const sameSetup: GoalPluginSetup = goalPlugin.setup
+const bothEntrypoints: {
+  id: "opencode-goal-plugin"
+  server: typeof GoalPlugin
+  setup: GoalPluginSetup
+} = goalPlugin
 void sameServer
 void sameExport
+void sameSetup
+void bothEntrypoints
 
 // @ts-expect-error unknown hooks must not be hidden by an index signature
 hooks["experimental.missing.hook"]
@@ -116,8 +126,10 @@ try {
     ["pack", "--json", "--pack-destination", packDirectory],
     { cwd: repository, encoding: "utf8", env: npmEnvironment },
   ))
-  assert.equal(packResult.length, 1)
-  const tarball = join(packDirectory, packResult[0].filename)
+  // npm < 12 prints a bare array; npm 12+ keys the same entries by package name.
+  const packed = Array.isArray(packResult) ? packResult : Object.values(packResult)
+  assert.equal(packed.length, 1)
+  const tarball = join(packDirectory, packed[0].filename)
   execNpm(
     ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--no-package-lock", "--cache", cacheDirectory, tarball],
     { cwd: consumerDirectory, stdio: "pipe", env: npmEnvironment },
