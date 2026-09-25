@@ -12,6 +12,12 @@ const packDirectory = join(root, "pack")
 const consumerDirectory = join(root, "consumer")
 const cacheDirectory = join(root, "npm-cache")
 const npmEnvironment = { ...process.env, npm_config_cache: cacheDirectory }
+// npm 12 rejects script-policy flags on a child install when the parent
+// `npm run` re-exports a user-level `allow-scripts`/`ignore-scripts` npmrc
+// entry as environment config (EALLOWSCRIPTS), so neutralize those keys here.
+for (const key of Object.keys(npmEnvironment)) {
+  if (/^npm_config_(?:allow|ignore)[-_]scripts$/i.test(key)) delete npmEnvironment[key]
+}
 const tsc = join(repositoryPath, "node_modules", "typescript", "bin", "tsc")
 
 function execNpm(args, options) {
@@ -144,7 +150,7 @@ try {
     cwd: consumerDirectory,
     stdio: "pipe",
   })
-  console.log(`type contract passed (NodeNext + Bundler; ${packResult[0].filename})`)
+  console.log(`type contract passed (NodeNext + Bundler; ${packed[0].filename})`)
 } finally {
   await rm(root, { recursive: true, force: true })
 }

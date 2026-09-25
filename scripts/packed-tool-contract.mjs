@@ -11,6 +11,12 @@ const packDirectory = join(root, "pack")
 const projectDirectory = join(root, "consumer")
 const cacheDirectory = join(root, "npm-cache")
 const npmEnvironment = { ...process.env, npm_config_cache: cacheDirectory }
+// npm 12 rejects script-policy flags on a child install when the parent
+// `npm run` re-exports a user-level `allow-scripts`/`ignore-scripts` npmrc
+// entry as environment config (EALLOWSCRIPTS), so neutralize those keys here.
+for (const key of Object.keys(npmEnvironment)) {
+  if (/^npm_config_(?:allow|ignore)[-_]scripts$/i.test(key)) delete npmEnvironment[key]
+}
 
 function execNpm(args, options) {
   if (process.env.npm_execpath) {
@@ -48,8 +54,9 @@ try {
     ["pack", "--json", "--pack-destination", packDirectory],
     { cwd: repository, encoding: "utf8", env: npmEnvironment },
   ))
-  assert.equal(packResult.length, 1)
-  const tarball = join(packDirectory, packResult[0].filename)
+  const packed = Array.isArray(packResult) ? packResult : Object.values(packResult)
+  assert.equal(packed.length, 1)
+  const tarball = join(packDirectory, packed[0].filename)
 
   execNpm(
     ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--no-package-lock", "--cache", cacheDirectory, tarball],
