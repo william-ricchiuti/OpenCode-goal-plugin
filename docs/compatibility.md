@@ -103,19 +103,24 @@ lease, budgets, tool surface, ledger) is shared code rather than a fork.
 | Plugin load through a package spec (`opencode-goal-plugin@0.10.1`) | `state: active` in `GET /api/plugin` |
 | Plugin load through a local `.opencode/plugins/<file>.js` entry | `state: active` |
 | Slash command registered through `ctx.command.transform` | `goal` listed by `GET /api/command` with the plugin's description |
-| Native agents registered through `ctx.agent.transform` | `goal` (primary) and `goal-verify` (subagent, hidden) present in `GET /api/agent` |
+| Native agents registered through `ctx.agent.transform` | `goal` (primary) and `goal-verify` (subagent, hidden) present in `GET /api/agent` with their system prompts and translated permission rules |
 | Config reload | re-arms the deferred command-ownership check via `command.updated` |
+| Command ownership over a legacy config `command.goal` entry, cold location boot | the plugin's framed control result is the admitted turn and carries the `opencode-goal-plugin` correlation metadata; the config template's `$ARGUMENTS` text never reaches the model |
+| Full goal run to completion on a live provider | `/goal <objective>` → agent tool work → `goal_complete` → archived as `state: "achieved"` with the evidence claim, history, and usage recorded |
+| Auto-continue loop on a live provider | two `<goal_continuation>` prompts admitted with `<continuation>` metadata and a live `<progress_budget>` countdown, then the talk-only stall gate paused the goal (`stopReason: "no tool calls"`) |
+| Session-title indicator (`sessionTitleStatus: true`) | live status line rendered in the session title (`⏸ <objective> · 2/3 · 7s · 11k/200k`) |
 
 Verified by tests against the real goal core (not a mock): `setup(ctx)`
 registers every surface the workflow needs, V2 events normalize to the V1
 event contract, transcript/message normalization, the flat session-client
 inputs, and an end-to-end `/goal set` command turn that creates a goal
-instead of being read as user input. The suite runs 439 tests (3 pre-existing
-Windows filesystem failures unrelated to OpenCode 2).
+instead of being read as user input. The suite runs 443 tests: 440 pass,
+with 3 pre-existing Windows filesystem failures unrelated to OpenCode 2.
 
-Not yet exercised against a live 2.x provider: a full auto-continue run to
-completion, `completionAudit` child sessions, and the session-title
-indicator. Treat those as unverified until a live-provider row is added.
+Remaining unverified against a live host: `completionAudit` child sessions —
+the degraded V2 path described under the completion-audit divergence below
+(metadata parent links, no child-session deletion) has not been exercised end
+to end.
 
 ### Hook mapping
 
@@ -195,6 +200,14 @@ entry:
 
 // OpenCode 2 (the command entry is not needed and should be omitted)
 { "plugins": ["opencode-goal-plugin@0.10.1"] }
+
+// OpenCode 2 with plugin options: repeat the exact package spec in object
+// form so the project entry — and its options — takes precedence over a
+// same-package entry in the user-level config (verified on 2.0.16; a
+// different spec, such as a local path, does not replace it).
+{ "plugins": [
+  { "package": "opencode-goal-plugin@0.10.1", "options": { "sessionTitleStatus": true } }
+] }
 ```
 
 Plugins that *do* ship a TUI component are registered in a second file whose

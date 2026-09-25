@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+- Make the release contracts pass under npm 12 on machines whose `~/.npmrc`
+  sets `allow-scripts`: `npm run` re-exports that entry as environment config,
+  which npm 12 rejects with `EALLOWSCRIPTS` when the child install also passes
+  `--ignore-scripts`, so the type, packed-host, and packed-tool contracts now
+  strip script-policy `npm_config_*` keys from the environment they hand to
+  child npm. The same three scripts also normalize npm 12's `pack --json`
+  output (keyed by package name instead of a bare array): the packed-host and
+  packed-tool contracts accepted only the array shape and failed at the
+  install step, and the type contract crashed in its final success log even
+  after both `tsc` passes because it still indexed the raw result. All three
+  contracts now pass locally (`type contract passed (NodeNext + Bundler;
+  opencode-goal-plugin-0.10.1.tgz)`, `packed host contract passed`,
+  `packed tool contract passed … 11 tools`).
+- Extend the live OpenCode 2.0.16 verification of the 0.10.1 adapter and
+  record it in `docs/compatibility.md`: command ownership over a legacy config
+  `command.goal` entry on a cold boot (the plugin's framed control result is
+  the admitted turn and the config template text never reaches the model), a
+  full goal run to completion through `goal_complete` on a live provider, the
+  auto-continue loop (two `<goal_continuation>` prompts with a live
+  `<progress_budget>` countdown before the talk-only stall gate paused the
+  goal), the session-title status indicator, agent registration with system
+  prompts and translated permission rules, and the plugin-options precedence
+  rule for a package listed in both user-level and project config.
+
 ## 0.10.1 — 2026-09-25
 
 - Add OpenCode 2 support. The default export now carries a `setup` entrypoint next to `server`: OpenCode 1 keeps reading `id` + `server` (the V1 hook map), OpenCode 2 reads `id` + `setup` and ignores `server`, so one package serves both lines and `engines.opencode` widens from `>=1.17.15 <2` to `>=1.17.15`. The new `src/v2-bridge.js` adapts OpenCode 2's plugin context onto the existing V1 hook contract instead of forking the workflow, so the goal core (state machine, persistence lease, budgets, ledger, tool surface) is unchanged: `session.hook("prompt")` drives `chat.message`, two `session.hook("context")` registrations drive `chat.params` and the system block, `session.hook("compaction")` drives `experimental.session.compacting`, `tool.hook("execute.before")` keeps the throw-to-block contract, `tool.transform`/`agent.transform` replace the `tool` map and `config` hook (Zod v4 passes through as Standard Schema, V1 agent permission/tool maps translate to ordered V2 rules with both spellings of renamed actions), `command.transform` registers `/goal` and submits the routed control result as the prompt itself, and `event.subscribe()` normalizes the V2 stream back to the V1 event shapes (`session.execution.succeeded` → `session.idle`, `…failed` → `session.error`, `…interrupted` → abort, `session.compaction.ended` → `session.compacted`, `session.step.ended` → `message.updated`, `session.agent/model.selected` → `session.updated`). Because V2 messages carry no `parentID`, it is derived from transcript order and from the last admitted prompt; because `session.create` has no `parentID` field, the completion auditor's child records the parent link in session metadata; V2 step failures are not treated as terminal (V2 retries them) and terminal errors come from `session.execution.failed`; V2 has no `client.app.log`, so advisory diagnostics use the existing console fallback; and V2 has no post-compaction auto-continue, so `experimental.compaction.autocontinue` needs no replacement. `test/v2-bridge.test.js` pins every mapping, the session-client contract, and an end-to-end `/goal set` command turn that creates a goal instead of being read as user input.
