@@ -16,6 +16,24 @@ const MAX_OWNER_FILE_BYTES = 4 * 1024
 const MAX_OWNER_TOKEN_LENGTH = 256
 const MAX_OWNER_HOSTNAME_LENGTH = 255
 const MAX_ACQUIRE_ATTEMPTS = 5
+// A long-running host (an `opencode serve` process kept alive across many
+// plugin reloads) can spawn a fresh plugin instance for the same location
+// without ever calling the previous instance's dispose — for example when a
+// write under the watched `.opencode` directory, such as this plugin's own
+// state file, triggers a location reload. The orphaned instance's claim then
+// has a live, same-host pid forever (it IS the host process), which used to
+// block every future instance in that process from ever acquiring the
+// session again.
+//
+// The owner touches its claim (see `touch()` below) every time it actually
+// handles a hook or tool call for that session, not on a free-running timer —
+// a timer would keep refreshing an orphan's claim forever too, since nothing
+// stops it once its instance is silently abandoned. A claim goes stale once
+// nobody has touched it for this long, which is sized to comfortably outlast
+// normal gaps between a session's own events (a user reading a long reply, a
+// quiet non-goal session) so a genuinely active owner is never reclaimed out
+// from under itself.
+const DEFAULT_STALE_CLAIM_MS = 10 * 60 * 1000
 
 function validStoredHostname(value) {
   return (
@@ -216,6 +234,27 @@ function ownerIsBlocking(owner, localHostname) {
   return processIsAlive(owner.pid) !== false
 }
 
+// Staleness is only ever evaluated for a same-host owner (see call site): a
+// remote host's claim is never reclaimed on a timer, since clock skew and
+// network partitions make "it stopped heartbeating" indistinguishable from
+// "it is still alive but slow to reach us".
+function claimIsStale(info, now, staleClaimMs) {
+  if (!Number.isFinite(staleClaimMs) || staleClaimMs < 0) return false
+  if (!info || !Number.isFinite(info.mtimeMs)) return false
+  return now() - info.mtimeMs >= staleClaimMs
+}
+
+async function touchClaim(claimPath) {
+  try {
+    const now = new Date()
+    await fs.utimes(claimPath, now, now)
+    return true
+  } catch (error) {
+    if (error?.code === "ENOENT") return false
+    throw error
+  }
+}
+
 function claimNameFor(token) {
   return `${CLAIM_PREFIX}${token}${CLAIM_SUFFIX}`
 }
@@ -412,7 +451,7 @@ async function inspectClaims(
   lockPath,
   ownToken,
   localHostname,
-  { malformedGraceMs, now },
+  { malformedGraceMs, now, staleClaimMs = 0 },
 ) {
   const entries = await fs.readdir(lockPath, { withFileTypes: true })
   let ownFound = false
@@ -451,7 +490,12 @@ async function inspectClaims(
       continue
     }
     if (ownerIsBlocking(record.owner, localHostname)) {
-      return { blocker: record.owner, blocked: true, ownFound }
+      const reclaimableStale =
+        record.owner.hostname === localHostname &&
+        claimIsStale(record.info, now, staleClaimMs)
+      if (!reclaimableStale) {
+        return { blocker: record.owner, blocked: true, ownFound }
+      }
     }
     await removeUniqueClaim(claimPath)
   }
@@ -476,6 +520,10 @@ function createLease(
     lockPath,
     claimDirectoryPath,
     owner,
+    async touch() {
+      if (released || releasing) return false
+      return touchClaim(claimPath)
+    },
     async release() {
       if (released || releasing) return false
       releasing = true
@@ -516,7 +564,11 @@ function createLease(
  */
 async function acquirePersistenceLeaseWithHooks(
   stateFilePath,
-  { malformedGraceMs = 30_000, now = () => Date.now() } = {},
+  {
+    malformedGraceMs = 30_000,
+    now = () => Date.now(),
+    staleClaimMs = DEFAULT_STALE_CLAIM_MS,
+  } = {},
   hooks = {},
 ) {
   const {
@@ -543,7 +595,7 @@ async function acquirePersistenceLeaseWithHooks(
       claimDirectoryPath,
       null,
       localHostname,
-      { malformedGraceMs, now },
+      { malformedGraceMs, now, staleClaimMs },
     )
     if (existing.blocked) throw new PersistenceLeaseContendedError(existing.blocker)
     const owner = {
@@ -577,7 +629,7 @@ async function acquirePersistenceLeaseWithHooks(
         claimDirectoryPath,
         owner.token,
         localHostname,
-        { malformedGraceMs, now },
+        { malformedGraceMs, now, staleClaimMs },
       )
       if (!observed.ownFound || observed.blocked) {
         lastBlocker = observed.blocker
@@ -611,7 +663,9 @@ export async function acquirePersistenceLease(stateFilePath, options = {}) {
 export const persistenceLeaseInternals = Object.freeze({
   acquirePersistenceLeaseWithHooks,
   claimDirectoryPathFor,
+  claimIsStale,
   claimNameFor,
+  DEFAULT_STALE_CLAIM_MS,
   inspectLegacyGuard,
   inspectClaims,
   legacyGuardMtimeIsSafe,
@@ -622,6 +676,7 @@ export const persistenceLeaseInternals = Object.freeze({
   readOwner,
   readOwnerRecord,
   sanitizeOwner,
+  touchClaim,
   validLegacySentinel,
   validDisplayHostname,
   validOwner,

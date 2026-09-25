@@ -170,6 +170,71 @@ test("persistence lease rejects a concurrent owner and releases by token", async
   await rm(dir, { recursive: true, force: true })
 })
 
+test("a same-pid claim that stopped heartbeating is reclaimed once it goes stale", async () => {
+  // Models a long-running host process whose plugin instance was silently
+  // replaced (a location reload that never called the old instance's
+  // dispose()) without releasing its lease. The orphaned claim's pid is this
+  // very process, so it is alive forever; only its heartbeat going quiet lets
+  // a fresh instance recover the session.
+  const dir = await mkdtemp(join(tmpdir(), "goal-lease-orphaned-"))
+  const state = join(dir, "state.json")
+  const orphan = await acquirePersistenceLease(state)
+  const claimPath = join(
+    persistenceLeaseInternals.claimDirectoryPathFor(`${state}.lock`),
+    `claim-${orphan.owner.token}.json`,
+  )
+  const past = new Date(Date.now() - 10_000)
+  await utimes(claimPath, past, past)
+
+  await assert.rejects(acquirePersistenceLease(state, { staleClaimMs: 60_000 }), (error) => {
+    assert.equal(isPersistenceLeaseContendedError(error), true)
+    return true
+  })
+
+  const reclaimer = await acquirePersistenceLease(state, { staleClaimMs: 5_000 })
+  assert.notEqual(reclaimer.owner.token, orphan.owner.token)
+  assert.deepEqual(await claimNames(`${state}.lock`), [`claim-${reclaimer.owner.token}.json`])
+
+  assert.equal(await orphan.release(), false)
+  assert.equal(await reclaimer.release(), true)
+  await rm(dir, { recursive: true, force: true })
+})
+
+test("touch() keeps a live same-pid claim from being reclaimed as stale", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-lease-heartbeat-"))
+  const state = join(dir, "state.json")
+  const owner = await acquirePersistenceLease(state)
+  const claimPath = join(
+    persistenceLeaseInternals.claimDirectoryPathFor(`${state}.lock`),
+    `claim-${owner.owner.token}.json`,
+  )
+  const past = new Date(Date.now() - 10_000)
+  await utimes(claimPath, past, past)
+
+  assert.equal(await owner.touch(), true)
+
+  await assert.rejects(
+    acquirePersistenceLease(state, { staleClaimMs: 5_000 }),
+    (error) => {
+      assert.equal(isPersistenceLeaseContendedError(error), true)
+      return true
+    },
+  )
+
+  assert.equal(await owner.release(), true)
+  await rm(dir, { recursive: true, force: true })
+})
+
+test("touch() is a no-op after release and never resurrects a removed claim", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-lease-touch-after-release-"))
+  const state = join(dir, "state.json")
+  const lease = await acquirePersistenceLease(state)
+  assert.equal(await lease.release(), true)
+  assert.equal(await lease.touch(), false)
+  assert.deepEqual(await claimNames(`${state}.lock`), [])
+  await rm(dir, { recursive: true, force: true })
+})
+
 test("version 1 wins safely when its legacy directory is created first", async () => {
   const dir = await mkdtemp(join(tmpdir(), "goal-lease-v1-first-"))
   const state = join(dir, "state.json")
