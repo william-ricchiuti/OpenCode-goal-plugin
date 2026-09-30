@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Invalidate pending completion approvals when the objective changes, and give auditors isolated goal snapshots so an old verdict cannot complete a newly edited goal.
+- Apply the planning-only agent hold to every work command, including add, sequence, resume and focus, and to goal creation/resume tools. Preserve routed first-turn protection when the host reports its agent after the command hook.
+- Reject contradictory completion check results, invalid exit codes, excessive per-criterion evidence and structured evidence that exceeds the completion budget.
+- Return structured failures from canonical goal creation when validation fails, including invalid budgets, while preserving legacy tool messages.
+- Honor the configured SDK shape in the built-in completion verifier's create, prompt, timeout abort and cleanup calls.
 - Fix persistence lease acquisition on filesystems that cap timestamps at 2038. New compatibility guards use a representable timestamp, existing 2100 guards remain valid, and expiring guards fail closed.
 - Keep ordinary chat available when goal leases encounter unsupported hard links (including `ENOSYS`), unsafe lease paths, or an unusable guard timestamp. Goal controls return `persistence_unavailable` with recovery guidance; migration failures release the session lease before entering passive mode.
 
