@@ -69,6 +69,48 @@ function staleAnchorMessage(mutant, occurrences) {
 
 const mutants = [
   {
+    name: "V2 failed agent switches never submit prompts",
+    file: "src/v2-bridge.js",
+    from: "      await session.switchAgent({ sessionID, agent })",
+    to: "      await session.switchAgent({ sessionID, agent }).catch(() => {})",
+    test: "test/v2-bridge.test.js",
+  },
+  {
+    name: "V2 verifier ownership is confirmed at submission",
+    file: "src/v2-bridge.js",
+    from: "        await assertVerifierOwnership(ctx, agent)",
+    to: "        void 0",
+    test: "test/v2-bridge.test.js",
+  },
+  {
+    name: "verifier config rejection revokes previous readiness",
+    file: "src/goal-plugin.js",
+    from: "      if (pluginOptions.completionAudit) verifierRegistrationReady = false",
+    to: "      if (pluginOptions.completionAudit) verifierRegistrationReady = true",
+    test: "test/v2-bridge.test.js",
+  },
+  {
+    name: "V2 synchronous audit waits for execution",
+    file: "src/v2-bridge.js",
+    from: "            await session.wait({ sessionID })",
+    to: "            void 0",
+    test: "test/v2-bridge.test.js",
+  },
+  {
+    name: "V2 child deletion maps the available remove operation",
+    file: "src/v2-bridge.js",
+    from: "            async delete(input) {",
+    to: "            async remove(input) {",
+    test: "test/v2-bridge.test.js",
+  },
+  {
+    name: "V2 location replacement disposes the old instance",
+    file: "src/v2-bridge.js",
+    from: "      if (disposePrevious) await disposePrevious()",
+    to: "      void disposePrevious",
+    test: "test/v2-bridge.test.js",
+  },
+  {
     name: "guard timestamps work on signed 32-bit filesystems",
     file: "src/persistence-lease.js",
     from: "const LEGACY_GUARD_MTIME_MS = Date.UTC(2038, 0, 1)",

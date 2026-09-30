@@ -857,6 +857,33 @@ test("passive goal tools reject honestly, remain per-session, and take over paus
   }
 })
 
+test("an idle live plugin keeps its lease until host disposal", async () => {
+  const directory = await fs.mkdtemp(join(tmpdir(), "goal-plugin-live-idle-"))
+  const stateFilePath = join(directory, "state.json")
+  const sessionID = "live-idle-session"
+  const paths = sessionPaths(stateFilePath, sessionID)
+  let owner, contender
+  try {
+    owner = await GoalPlugin({ client: hostClient(), directory }, { stateFilePath })
+    await setGoal(owner, sessionID, "live owner objective")
+    const claimDir = `${paths.stateFilePath}.lock.claims-v2`
+    const claims = (await fs.readdir(claimDir)).filter(name => name.startsWith("claim-"))
+    const past = new Date(Date.now() - 24 * 60 * 60 * 1000)
+    await fs.utimes(join(claimDir, claims[0]), past, past)
+    contender = await GoalPlugin({ client: hostClient(), directory }, { stateFilePath })
+    const denied = JSON.parse(await contender.tool.goal_status.execute({}, { sessionID }))
+    assert.equal(denied.ok, false)
+    assert.equal(denied.error, "session_owned_elsewhere")
+    assert.deepEqual((await fs.readdir(claimDir)).filter(name => name.startsWith("claim-")), claims)
+    await owner.dispose()
+    await contender.dispose()
+    contender = await GoalPlugin({ client: hostClient(), directory }, { stateFilePath })
+    const recovered = JSON.parse(await contender.tool.goal_status.execute({}, { sessionID }))
+    assert.equal(recovered.ok, true)
+    assert.match(recovered.message, /live owner objective/)
+  } finally { await contender?.dispose(); await owner?.dispose(); await fs.rm(directory, { recursive: true, force: true }) }
+})
+
 test("expired passive command guards require a fresh command boundary for takeover", async () => {
   for (const accepted of [false, true]) {
     const directory = await fs.mkdtemp(join(tmpdir(), "goal-plugin-passive-expired-command-"))

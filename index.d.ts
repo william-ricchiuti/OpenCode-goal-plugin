@@ -103,9 +103,10 @@ export interface CompletionAuditorOptions {
  */
 export interface GoalPluginOptions {
   /**
-   * OpenCode session SDK argument shape. PluginInput currently supplies the
-   * legacy generated client; set `"flat"` when embedding with the v2 SDK.
-   * The compatibility adapter remembers the successful shape per operation.
+   * OpenCode session SDK argument shape. The compatibility adapter supplies
+   * the legacy generated client on OpenCode 1 and the flattened client on
+   * OpenCode 2 (where the bridge pins `"flat"` regardless of this option),
+   * remembering the successful shape per operation.
    * @default "legacy"
    */
   sdkShape?: "legacy" | "flat"
@@ -275,6 +276,7 @@ export interface GoalPluginOptions {
   /** Number of rotated lifecycle-ledger generations to retain (0-10). @default 3 */
   ledgerRetentionFiles?: number
 
+
   /**
    * How long, in milliseconds, a completed goal's summary remains
    * available through `/goal status` after the goal leaves active memory.
@@ -299,10 +301,14 @@ export interface GoalPluginOptions {
   commandName?: string
 
   /**
-   * Whether the plugin installs its `command.execute.before` hook at all.
-   * Set to `false` if you only want the auto-continue/persistence
-   * behavior driven programmatically (e.g. via {@link registerTools})
-   * and don't want the plugin to own a slash command.
+   * Whether the plugin owns its slash command. On OpenCode 1 this installs
+   * the `command.execute.before` hook; on OpenCode 2 the plugin registers the
+   * command itself through `ctx.command.transform` (no config `command`/
+   * `commands` entry is required, and a legacy one with the same name is
+   * re-asserted so it cannot shadow the plugin handler). Set to `false` if
+   * you only want the auto-continue/persistence behavior driven
+   * programmatically (e.g. via {@link registerTools}) and don't want the
+   * plugin to own a slash command.
    * @default true
    */
   registerCommand?: boolean
@@ -483,13 +489,32 @@ export function GoalPlugin(
 export const testInternals: Readonly<Record<string, unknown>>
 
 /**
- * Default export consumed by OpenCode's plugin loader:
- * `{ "opencode-goal-plugin": { ... } }` in `opencode.json` resolves `id`
- * and calls `server` to obtain the plugin's hooks.
+ * The OpenCode 2 `setup(ctx)` entrypoint. `ctx` is the OpenCode 2 plugin
+ * context (an OpenCode server client plus plugin domains such as `session`,
+ * `tool`, `agent`, `command`, and `event`), typed loosely here so this
+ * package does not require `@opencode/plugin` at runtime. It resolves to the
+ * cleanup function OpenCode 2 runs when the plugin unloads.
+ */
+export type GoalPluginSetup = (
+  context: {
+    readonly options?: GoalPluginOptions | Record<string, unknown>
+    readonly location?: { readonly directory?: string; [key: string]: unknown }
+    readonly [domain: string]: unknown
+  },
+) => Promise<() => Promise<void>>
+
+/**
+ * Default export consumed by OpenCode's plugin loader. Both lines read the
+ * same object:
+ *
+ * - OpenCode 1 resolves the `id` and calls `server` to obtain the hook map.
+ * - OpenCode 2 resolves the `id` and calls `setup`, which registers the same
+ *   workflow through the OpenCode 2 hook domains and ignores `server`.
  */
 declare const goalPlugin: {
   id: "opencode-goal-plugin"
   server: typeof GoalPlugin
+  setup: GoalPluginSetup
 }
 
 export default goalPlugin

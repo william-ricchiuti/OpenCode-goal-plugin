@@ -12,6 +12,12 @@ const packDirectory = join(root, "pack")
 const consumerDirectory = join(root, "consumer")
 const cacheDirectory = join(root, "npm-cache")
 const npmEnvironment = { ...process.env, npm_config_cache: cacheDirectory }
+// npm 12 rejects script-policy flags on a child install when the parent
+// `npm run` re-exports a user-level `allow-scripts`/`ignore-scripts` npmrc
+// entry as environment config (EALLOWSCRIPTS), so neutralize those keys here.
+for (const key of Object.keys(npmEnvironment)) {
+  if (/^npm_config_(?:allow|ignore)[-_]scripts$/i.test(key)) delete npmEnvironment[key]
+}
 const tsc = join(repositoryPath, "node_modules", "typescript", "bin", "tsc")
 
 function execNpm(args, options) {
@@ -30,6 +36,7 @@ import goalPlugin, {
   type CompletionAuditContext,
   type GoalPluginHooks,
   type GoalPluginOptions,
+  type GoalPluginSetup,
 } from "opencode-goal-plugin"
 import serverPlugin from "opencode-goal-plugin/server"
 
@@ -93,8 +100,17 @@ await hooks.dispose()
 
 const sameServer: typeof GoalPlugin = goalPlugin.server
 const sameExport: typeof goalPlugin = serverPlugin
+// OpenCode 1 reads \`server\`, OpenCode 2 reads \`setup\`; both live on one object.
+const sameSetup: GoalPluginSetup = goalPlugin.setup
+const bothEntrypoints: {
+  id: "opencode-goal-plugin"
+  server: typeof GoalPlugin
+  setup: GoalPluginSetup
+} = goalPlugin
 void sameServer
 void sameExport
+void sameSetup
+void bothEntrypoints
 
 // @ts-expect-error unknown hooks must not be hidden by an index signature
 hooks["experimental.missing.hook"]
@@ -116,8 +132,10 @@ try {
     ["pack", "--json", "--pack-destination", packDirectory],
     { cwd: repository, encoding: "utf8", env: npmEnvironment },
   ))
-  assert.equal(packResult.length, 1)
-  const tarball = join(packDirectory, packResult[0].filename)
+  // npm < 12 prints a bare array; npm 12+ keys the same entries by package name.
+  const packed = Array.isArray(packResult) ? packResult : Object.values(packResult)
+  assert.equal(packed.length, 1)
+  const tarball = join(packDirectory, packed[0].filename)
   execNpm(
     ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--no-package-lock", "--cache", cacheDirectory, tarball],
     { cwd: consumerDirectory, stdio: "pipe", env: npmEnvironment },
@@ -132,7 +150,7 @@ try {
     cwd: consumerDirectory,
     stdio: "pipe",
   })
-  console.log(`type contract passed (NodeNext + Bundler; ${packResult[0].filename})`)
+  console.log(`type contract passed (NodeNext + Bundler; ${packed[0].filename})`)
 } finally {
   await rm(root, { recursive: true, force: true })
 }

@@ -170,6 +170,22 @@ test("persistence lease rejects a concurrent owner and releases by token", async
   await rm(dir, { recursive: true, force: true })
 })
 
+test("an aged live claim remains authoritative until explicitly released", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-lease-live-aged-"))
+  const state = join(dir, "state.json")
+  const owner = await acquirePersistenceLease(state)
+  try {
+    const claim = join(persistenceLeaseInternals.claimDirectoryPathFor(`${state}.lock`), `claim-${owner.owner.token}.json`)
+    const past = new Date(Date.now() - 24 * 60 * 60 * 1000)
+    await utimes(claim, past, past)
+    await assert.rejects(acquirePersistenceLease(state), isPersistenceLeaseContendedError)
+    assert.deepEqual(await claimNames(`${state}.lock`), [`claim-${owner.owner.token}.json`])
+    assert.equal(await owner.release(), true)
+    const successor = await acquirePersistenceLease(state)
+    assert.equal(await successor.release(), true)
+  } finally { await owner.release(); await rm(dir, { recursive: true, force: true }) }
+})
+
 test("version 1 wins safely when its legacy directory is created first", async () => {
   const dir = await mkdtemp(join(tmpdir(), "goal-lease-v1-first-"))
   const state = join(dir, "state.json")
