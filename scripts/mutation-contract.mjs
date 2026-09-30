@@ -69,6 +69,13 @@ function staleAnchorMessage(mutant, occurrences) {
 
 const mutants = [
   {
+    name: "canonical goal_set preserves structured validation failures",
+    file: "src/goal-plugin.js",
+    from: "return handlers.setGoalResult(sessionID, args)",
+    to: "return goalToolSuccess(await handlers.setGoal(sessionID, args))",
+    test: "test/tool-validation.test.js",
+  },
+  {
     name: "passed completion checks cannot carry failed exit codes",
     file: "src/completion-claim.js",
     from: 'result === "passed" && exitCode !== undefined && exitCode !== 0',

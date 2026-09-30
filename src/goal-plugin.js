@@ -3321,30 +3321,29 @@ function buildAgentToolHandlers({
     return "No goal history recorded yet."
   }
 
-  async function setGoal(sessionID, args = {}) {
+  async function setGoalResult(sessionID, args = {}) {
     const objective = typeof args.objective === "string" ? args.objective.trim() : ""
-    if (!objective) return "No objective provided. Pass a non-empty `objective`."
+    if (!objective) return goalToolFailure("invalid_objective", "No objective provided. Pass a non-empty `objective`.")
     const replaceLock = agentLockMessage(sessionID, "replace")
-    if (replaceLock) return replaceLock
+    if (replaceLock) return goalToolFailure("agent_authority", replaceLock)
     if (objective.length > MAX_GOAL_OBJECTIVE_LENGTH)
-      return `Invalid objective: must be ${MAX_GOAL_OBJECTIVE_LENGTH} characters or fewer.`
+      return goalToolFailure("invalid_objective", `Invalid objective: must be ${MAX_GOAL_OBJECTIVE_LENGTH} characters or fewer.`)
     for (const [field, value] of [["successCriteria", args.successCriteria], ["constraints", args.constraints]]) {
       if (typeof value === "string" && value.length > MAX_GOAL_META_LENGTH)
-        return `Invalid ${field}: must be ${MAX_GOAL_META_LENGTH} characters or fewer.`
+        return goalToolFailure("invalid_metadata", `Invalid ${field}: must be ${MAX_GOAL_META_LENGTH} characters or fewer.`)
     }
 
     // Validate budget args before normalizing: normalizeOptions silently substitutes
     // defaults for non-positive values, giving no feedback to the caller.
-    if (Number.isFinite(args.maxTurns) && args.maxTurns <= 0)
-      return `Invalid maxTurns: ${args.maxTurns} — must be a positive integer.`
-    if (Number.isFinite(args.maxTokens) && args.maxTokens <= 0)
-      return `Invalid maxTokens: ${args.maxTokens} — must be a positive integer.`
-    if (Number.isFinite(args.maxDurationMs) && args.maxDurationMs <= 0)
-      return `Invalid maxDurationMs: ${args.maxDurationMs} — must be a positive number.`
-    if (Number.isFinite(args.maxCostUsd) && args.maxCostUsd <= 0)
-      return `Invalid maxCostUsd: ${args.maxCostUsd} — must be a positive number of US dollars.`
+    for (const field of ["maxTurns", "maxTokens", "maxDurationMs"]) {
+      if (args[field] !== undefined && (!Number.isSafeInteger(args[field]) || args[field] <= 0)) {
+        return goalToolFailure("invalid_budget", `Invalid ${field}: ${args[field]} — must be a positive integer.`)
+      }
+    }
+    if (args.maxCostUsd !== undefined && (typeof args.maxCostUsd !== "number" || !Number.isFinite(args.maxCostUsd) || args.maxCostUsd <= 0))
+      return goalToolFailure("invalid_budget", `Invalid maxCostUsd: ${args.maxCostUsd} — must be a positive number of US dollars.`)
     if (args.mode !== undefined && !GOAL_MODES.has(String(args.mode).toLowerCase()))
-      return `Invalid mode: ${args.mode} (expected ${[...GOAL_MODES].join(" or ")}).`
+      return goalToolFailure("invalid_mode", `Invalid mode: ${args.mode} (expected ${[...GOAL_MODES].join(" or ")}).`)
     const options = normalizeOptions({
       ...defaultGoalOptions,
       ...(Number.isFinite(args.maxTurns) ? { maxTurns: args.maxTurns } : {}),
@@ -3383,7 +3382,11 @@ function buildAgentToolHandlers({
     // that build XML (buildGoalBlock, buildContinueMessage) can apply escaping
     // themselves. Escaping here prevents XML metacharacters in user-supplied
     // objectives from breaking tool-result boundaries in XML-serialized formats.
-    return `New ${heldLabel ? "held" : "active"} goal: ${escapeGoalText(goal.condition)}`
+    return goalToolSuccess(`New ${heldLabel ? "held" : "active"} goal: ${escapeGoalText(goal.condition)}`)
+  }
+
+  async function setGoal(sessionID, args = {}) {
+    return (await setGoalResult(sessionID, args)).message
   }
 
   async function updateGoal(sessionID, args = {}) {
@@ -3738,7 +3741,7 @@ function buildAgentToolHandlers({
       : "Goal cleared."
   }
 
-  return { getGoal, getGoalHistory, setGoal, updateGoal, clearGoal, agentLockMessage }
+  return { getGoal, getGoalHistory, setGoal, setGoalResult, updateGoal, clearGoal, agentLockMessage }
 }
 
 function agentToolSessionID(ctx) {
@@ -3850,7 +3853,7 @@ function buildAgentTools(
       }
       const locked = handlers.agentLockMessage?.(sessionID, "replace")
       if (locked) return goalToolFailure("agent_authority", locked)
-      return goalToolSuccess(await handlers.setGoal(sessionID, args))
+      return handlers.setGoalResult(sessionID, args)
     },
     update: async (sessionID, args) => {
       const before = currentGoal(sessionID)
