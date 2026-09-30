@@ -3415,6 +3415,10 @@ function buildAgentToolHandlers({
         return `Invalid objective: must be ${MAX_GOAL_OBJECTIVE_LENGTH} characters or fewer.`
       }
       goal.condition = args.objective.trim()
+      // An objective edit invalidates work and audit verdicts in flight without
+      // resetting the user's budget or changing the registry identity.
+      goal.runId = randomUUID()
+      goal.continuationClaim = null
       // Deliberately NOT clearing goal.stopped or goal.stopReason: updating the
       // objective does not un-stop a goal. Use status='resumed' to explicitly
       // restart a stopped goal; silently un-stopping would resurrect audit-rejected
@@ -3466,7 +3470,7 @@ function buildAgentToolHandlers({
         if (completionAuditor) {
           let verdict
           try {
-            verdict = await completionAuditor({ goal, sessionID, latestText: evidence })
+            verdict = await completionAuditor({ goal: structuredClone(goal), sessionID, latestText: evidence })
           } catch (error) {
             verdict = { approved: false, reason: "auditor error" }
           }
@@ -5384,6 +5388,7 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
         }
 
         goal.condition = newObjective
+        goal.runId = randomUUID()
         // Editing the objective revises the goal in place: keep the turn,
         // token, and time budget plus history, but clear soft-stop state so the
         // revised goal can continue. A goal that hit a hard limit will re-pause
@@ -6169,7 +6174,7 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
             if (completionAuditor) {
               let verdict
               try {
-                verdict = await completionAuditor({ goal: activeGoalAfterMessages, sessionID, latestText })
+                verdict = await completionAuditor({ goal: structuredClone(activeGoalAfterMessages), sessionID, latestText })
               } catch (error) {
                 await logPluginError(client, "Completion auditor threw", error)
                 verdict = { approved: false, reason: "auditor error" }

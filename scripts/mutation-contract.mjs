@@ -69,6 +69,34 @@ function staleAnchorMessage(mutant, occurrences) {
 
 const mutants = [
   {
+    name: "tool objective edits invalidate pending completion audits",
+    file: "src/goal-plugin.js",
+    from: /goal.condition = args.objective.trim\(\)([\s\S]*?)goal.runId = randomUUID\(\)/,
+    to: "goal.condition = args.objective.trim()$1void 0",
+    test: "test/audit-revisions.test.js",
+  },
+  {
+    name: "command objective edits invalidate pending completion audits",
+    file: "src/goal-plugin.js",
+    from: "goal.condition = newObjective\n        goal.runId = randomUUID()",
+    to: "goal.condition = newObjective",
+    test: "test/audit-revisions.test.js",
+  },
+  {
+    name: "tool auditors cannot mutate live goal state",
+    file: "src/goal-plugin.js",
+    from: "goal: structuredClone(goal), sessionID, latestText: evidence",
+    to: "goal, sessionID, latestText: evidence",
+    test: "test/audit-revisions.test.js",
+  },
+  {
+    name: "marker auditors cannot mutate live goal state",
+    file: "src/goal-plugin.js",
+    from: "goal: structuredClone(activeGoalAfterMessages), sessionID, latestText",
+    to: "goal: activeGoalAfterMessages, sessionID, latestText",
+    test: "test/audit-revisions.test.js",
+  },
+  {
     name: "verifier default deny",
     file: "src/native-agent-config.js",
     from: '\"*\": \"deny\"',
