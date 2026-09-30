@@ -4593,6 +4593,7 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
   const childSessionAuditor = pluginOptions.completionAudit
     ? createChildSessionAuditor(client, {
         ...(pluginOptions.auditorOptions || {}),
+        sdkShape: pluginOptions.sdkShape === "flat" ? "flat" : "legacy",
         agent: pluginOptions.verifierAgentName || "goal-verify",
       })
     : null

@@ -69,6 +69,13 @@ function staleAnchorMessage(mutant, occurrences) {
 
 const mutants = [
   {
+    name: "built-in verifier inherits the configured SDK shape",
+    file: "src/goal-plugin.js",
+    from: 'sdkShape: pluginOptions.sdkShape === "flat" ? "flat" : "legacy",',
+    to: 'sdkShape: "legacy",',
+    test: "test/auditor-sdk-shape.test.js",
+  },
+  {
     name: "canonical goal_set preserves structured validation failures",
     file: "src/goal-plugin.js",
     from: "return handlers.setGoalResult(sessionID, args)",
@@ -99,7 +106,7 @@ const mutants = [
   {
     name: "agent tool creation holds in Plan mode",
     file: "src/goal-plugin.js",
-    from: "    const heldLabel = await holdRestrictedActivation(sessionID, goal)",
+    from: /^ {4}const heldLabel = await holdRestrictedActivation\(sessionID, goal\)$/m,
     to: "    const heldLabel = \"\"",
     test: "test/plan-activation.test.js",
   },
