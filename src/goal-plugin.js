@@ -4306,6 +4306,7 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
     if (!sessionID) return ""
     const cached = currentRuntime().sessionExecutionContexts.get(sessionID)?.agent
     if (typeof cached === "string" && cached.trim()) return cached.trim()
+    if (typeof client?.session?.get !== "function") return ""
     try {
       const session = await sessionApi.get(sessionID)
       const agent = typeof session?.agent === "string" ? session.agent.trim() : ""
