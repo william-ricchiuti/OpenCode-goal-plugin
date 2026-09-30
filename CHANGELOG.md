@@ -4,6 +4,7 @@
 
 ## 0.11.0 — 2026-09-30
 
+- Normalize directory separators with a linear scan, preventing adversarial location strings from causing regular-expression backtracking.
 - Keep live persistence owners authoritative regardless of claim age. On OpenCode 2 location reloads, explicitly dispose the previous same-process plugin instance before initializing its replacement; do not steal a live claim on a timer.
 - Fail closed when an OpenCode 2 agent switch fails or the completion verifier's identity/permissions differ from the owned definition. Revoke previously confirmed audit readiness on config conflicts, wait for the child execution before reading its verdict, and map child removal when the host exposes it.
 - Make Windows-path case assertions platform-aware while preserving POSIX location isolation.

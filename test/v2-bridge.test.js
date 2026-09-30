@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { spawnSync } from "node:child_process"
 import { z } from "zod"
 import goalPlugin, { GoalPlugin, testInternals } from "../src/goal-plugin.js"
 import { applyNativeGoalConfig } from "../src/native-agent-config.js"
@@ -202,6 +203,19 @@ test("events from another location are dropped before they reach the goal core",
   // `toV1Event` itself is location-agnostic; the subscriber applies the
   // filter (asserted directly here) before anything reaches the goal core.
   assert.notEqual(toV1Event(foreign, host), null)
+})
+
+test("directory isolation normalizes long separator runs without backtracking", () => {
+  const source = new URL("../src/v2-bridge.js", import.meta.url).href
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import assert from "node:assert/strict"
+    import { eventBelongsToLocation } from ${JSON.stringify(source)}
+    const directory = "/".repeat(200000) + "project"
+    assert.equal(eventBelongsToLocation({ location: { directory: directory + "/\\\\/" } }, directory), true)
+    assert.equal(eventBelongsToLocation({ location: { directory } }, directory + "-other"), false)
+  `], { timeout: 5000, encoding: "utf8" })
+  assert.equal(result.error, undefined, result.error?.message)
+  assert.equal(result.status, 0, result.stderr)
 })
 
 /* ------------------------------------------------------------------ *

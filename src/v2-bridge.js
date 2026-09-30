@@ -96,7 +96,10 @@ export function eventBelongsToLocation(event, directory) {
 }
 
 function normalizeDirectory(value) {
-  const trimmed = String(value).replace(/[\\/]+$/, "")
+  const directory = String(value)
+  let end = directory.length
+  while (end > 0 && (directory[end - 1] === "/" || directory[end - 1] === "\\")) end--
+  const trimmed = directory.slice(0, end)
   return process.platform === "win32" ? trimmed.toLowerCase() : trimmed
 }
 
