@@ -385,7 +385,7 @@ Additional plugin-level options:
 - `sdkShape` — OpenCode session-client argument shape: `legacy` (the default generated `PluginInput` client using `{ path, body, query }`) or `flat` (clients using `{ sessionID, ... }`). Read-only `messages`/`get` calls may probe the alternate shape after an argument/schema `TypeError`; mutating calls are never replayed, so set this option correctly for embedded clients.
 - `persistState` — whether to persist active goals and recent goal results to disk.
 - `stateFilePath` — root path for the persisted session-shard namespace. Overrides the default project-local path and the `OPENCODE_GOAL_STATE_PATH` env var. Useful if you want a fixed or ephemeral location. When unset, the default root is `<cwd>/.opencode/goals/state.json`; shards are written below `<stateFilePath>.sessions/` (see the persistence section above).
-- `ledgerFilePath` — override where the lifecycle ledger is written. By default each session shard keeps its ledger next to its state file as `<state.json>.ledger.jsonl`.
+- `ledgerFilePath` — override the legacy aggregate ledger read during migration. Runtime session shards keep their ledgers next to their state files as `<state.json>.ledger.jsonl`.
 - `ledgerMaxBytes` / `ledgerRetentionFiles` — bound the lifecycle ledger to 2 MiB per generation and three rotated generations by default. Set retention to `0` to discard the active ledger when it reaches the size ceiling.
 - `resultRetentionMs` — how long a completed goal summary remains available through `/goal status` after the goal leaves active memory.
 - `maxStoredResults` — maximum number of completed-goal summaries retained in process memory before the oldest ones are evicted.

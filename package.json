@@ -41,6 +41,7 @@
     "test:coverage": "node --test --experimental-test-coverage test/*.test.js",
     "type:check": "node scripts/type-contract.mjs",
     "smoke": "node scripts/smoke-command-hook.mjs",
+    "smoke:v2-host": "node scripts/live-v2-host.mjs",
     "smoke:packed-host": "node scripts/packed-host-contract.mjs",
     "smoke:packed-tools": "node scripts/packed-tool-contract.mjs",
     "benchmark:behavior": "node scripts/behavior-benchmark.mjs",

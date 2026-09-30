@@ -276,15 +276,6 @@ export interface GoalPluginOptions {
   /** Number of rotated lifecycle-ledger generations to retain (0-10). @default 3 */
   ledgerRetentionFiles?: number
 
-  /**
-   * Test-only override for how long, in milliseconds, a session lease can go
-   * without a heartbeat before a same-host successor may reclaim it (see the
-   * single-owner concurrency guarantee in the README). Production hosts
-   * should not need to change the default, which is sized to comfortably
-   * outlast normal gaps between a session's own events.
-   * @default 600000
-   */
-  leaseStaleAfterMs?: number
 
   /**
    * How long, in milliseconds, a completed goal's summary remains

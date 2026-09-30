@@ -87,7 +87,7 @@ remains registered as additional protection for hosts that support it.
 ## OpenCode 2
 
 **Status: supported.** Verified against a real OpenCode **2.0.16** host on
-Windows; the V2 hook surface is pinned by `test/v2-bridge.test.js`.
+Windows (contributor testing), with independent macOS acceptance for Plan activation, restricted completion auditing and safe reload recovery. The V2 hook surface is pinned by `test/v2-bridge.test.js`.
 
 `engines.opencode` is `>=1.17.15` with no upper bound: one entrypoint serves
 both lines. OpenCode 1 reads `id` + `server` from the default export;
@@ -114,15 +114,23 @@ Verified by tests against the real goal core (not a mock): `setup(ctx)`
 registers every surface the workflow needs, V2 events normalize to the V1
 event contract, transcript/message normalization, the flat session-client
 inputs, and an end-to-end `/goal set` command turn that creates a goal
-instead of being read as user input. The suite runs 443 tests: 440 pass,
-with 3 pre-existing Windows filesystem failures unrelated to OpenCode 2.
+instead of being read as user input. The current suite also rejects failed agent switches, altered verifier permissions and stale registration readiness.
 
-Remaining unverified against a live host: `completionAudit` child sessions —
-the degraded V2 path described under the completion-audit divergence below
-(metadata parent links, no child-session deletion) has not been exercised end
-to end.
+Independent macOS acceptance against 2.0.16 uses a local deterministic provider: fresh Plan add/sequence commands are held; `goal_complete` runs through Code Mode, the child receives the `goal-verify` identity and only read/glob/grep tools, and the parent archives only after its verdict. A foreign verifier rejects completion before any child model request. Location reload releases the previous instance's claim and recovers active work paused. These tests use no paid provider.
+
+The plugin context on 2.0.16 does not expose session removal, so its audit children remain retained by the host. If a host exposes `session.remove`, the adapter maps it to the core's cleanup contract. Claims about child deletion are limited to that conditional adapter test.
 
 ### Hook mapping
+
+The isolated live acceptance command requires a pinned host runtime installed outside your real OpenCode config:
+
+```sh
+npm install --prefix /tmp/goal-v2-runtime --ignore-scripts --no-audit --no-fund @opencode/cli@2.0.16 @opencode/plugin@2.0.16
+OPENCODE_V2_RUNTIME_DIR=/tmp/goal-v2-runtime npm run smoke:v2-host
+OPENCODE_V2_RUNTIME_DIR=/tmp/goal-v2-runtime GOAL_V2_FOREIGN_VERIFIER=1 npm run smoke:v2-host
+```
+
+The script uses an isolated HOME/config/cache and a localhost deterministic provider. It tests Plan add/sequence, Code Mode completion with the restricted verifier, and paused recovery after reload; the second mode tests rejection of a foreign verifier. `OPENCODE_V2_BINARY` can select a different binary explicitly. The positive child-retention result reflects the 2.0.16 plugin API limit described below. This optional live acceptance command is separate from the network-free behavior benchmark and does not run automatically in the release gate.
 
 | OpenCode 1 | OpenCode 2 |
 | --- | --- |
@@ -171,6 +179,7 @@ progress), `session.agent.selected`/`session.model.selected` →
    and echoes it back to satisfy the auditor's integrity check. V2 exposes no
    session-delete operation to the plugin context, so audit children are not
    removed afterwards (V1 deleted them when `client.session.delete` existed).
+   Every built-in audit verifies the live agent system and complete permission rules before switching agents. Failed switches abort submission. The synchronous auditor waits for V2 execution before reading the assistant verdict.
 6. **Agent permission vocabulary.** V1 agent tool maps are translated to
    ordered V2 rules, emitting both spellings for renamed actions
    (`bash`→`shell`, `write`/`patch`→`edit`, `task`→`subagent`), with the `*`
@@ -184,6 +193,8 @@ progress), `session.agent.selected`/`session.model.selected` →
    `package.json` is resolved by name and version and installed into OpenCode's
    npm cache from the registry, so a local checkout is only loaded through a
    `.opencode/plugins/<file>.js` entry (or after publishing).
+
+Same-process reloads explicitly retire the old instance before the replacement acquires persistence. Quiet live owners remain authoritative; another process must exit or release its claim before takeover.
 
 ### Configuration
 

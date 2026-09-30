@@ -2,19 +2,9 @@
 
 ## Unreleased
 
-- Fix a permanent `session_owned_elsewhere` lockout on OpenCode 2: a
-  long-running host process can reload a location's plugin instance (a
-  file-watcher event under `.opencode`, including this plugin's own state
-  writes, can trigger that) without disposing the instance it replaces. The
-  orphaned instance's session lease used to stay live forever — its owning
-  pid is the host process itself, which never exits — permanently blocking
-  its own successor from ever recovering the session. The lease now goes
-  stale once its owner stops refreshing it (each instance touches its claim
-  every time it actually handles that session's events), and a same-host
-  successor reclaims a stale claim automatically; a different host's claim is
-  never reclaimed this way. See `persistence-lease.js`'s `DEFAULT_STALE_CLAIM_MS`
-  and the new `leaseStaleAfterMs` plugin option (test-only; production hosts
-  should not need to change the default).
+- Keep live persistence owners authoritative regardless of claim age. On OpenCode 2 location reloads, explicitly dispose the previous same-process plugin instance before initializing its replacement; do not steal a live claim on a timer.
+- Fail closed when an OpenCode 2 agent switch fails or the completion verifier's identity/permissions differ from the owned definition. Revoke previously confirmed audit readiness on config conflicts, wait for the child execution before reading its verdict, and map child removal when the host exposes it.
+- Make Windows-path case assertions platform-aware while preserving POSIX location isolation.
 - Make the release contracts pass under npm 12 on machines whose `~/.npmrc`
   sets `allow-scripts`: `npm run` re-exports that entry as environment config,
   which npm 12 rejects with `EALLOWSCRIPTS` when the child install also passes

@@ -26,7 +26,7 @@
  */
 
 import { z } from "zod"
-import { nativeAgentConfigInternals } from "./native-agent-config.js"
+import { applyNativeGoalConfig } from "./native-agent-config.js"
 
 export const PLUGIN_ID = "opencode-goal-plugin"
 
@@ -413,13 +413,24 @@ export function toV1Event(event, host = createHostState()) {
  * V2 session client
  * ------------------------------------------------------------------ */
 
+async function assertVerifierOwnership(ctx, name) {
+  if (typeof ctx.agent?.get !== "function") throw new Error("verifier agent lookup unavailable")
+  const actual = unwrap(await ctx.agent.get({ agentID: name }))
+  const config = applyNativeGoalConfig({}, { verifierAgentName: name, goalAgentName: name === "goal" ? "goal-work" : "goal" })
+  const expected = translateV1Agent(name, config.agent[name])
+  if (!actual || actual.system !== expected.system ||
+      JSON.stringify(actual.permissions) !== JSON.stringify(expected.permissions)) {
+    throw new Error(`completionAudit cannot safely use agent ${JSON.stringify(name)}; verifier ownership or permissions were not confirmed`)
+  }
+}
+
 /**
  * Present V2's `ctx.session` domain through the session SDK contract the
  * plugin already uses. `createOpenCodeSessionApi` prefers the flat input
  * shape, so every method accepts `{ sessionID, ... }` (a legacy `{path,
  * query}` input is tolerated for read-only operations).
  */
-export function createV2Client(ctx, host = createHostState()) {
+export function createV2Client(ctx, host = createHostState(), options = ctx.options || {}) {
   const session = ctx.session
 
   const submitPrompt = async (input = {}) => {
@@ -431,11 +442,11 @@ export function createV2Client(ctx, host = createHostState()) {
     // prompt-level agent field, so switch the session first — the same thing
     // V2's own command runner does.
     if (typeof input.agent === "string" && input.agent.trim()) {
-      try {
-        await session.switchAgent({ sessionID, agent: input.agent.trim() })
-      } catch (error) {
-        logWarn(`Failed to switch agent ${JSON.stringify(input.agent)} before a plugin prompt`, error?.message || error)
+      const agent = input.agent.trim()
+      if (options.completionAudit && agent === (options.verifierAgentName || "goal-verify")) {
+        await assertVerifierOwnership(ctx, agent)
       }
+      await session.switchAgent({ sessionID, agent })
     }
 
     const parts = Array.isArray(input.parts) ? input.parts : []
@@ -483,7 +494,18 @@ export function createV2Client(ctx, host = createHostState()) {
       },
       async prompt(input) {
         try {
-          return await submitPrompt(input)
+          const admitted = await submitPrompt(input)
+          if (admitted?.error) return admitted
+          // V2 prompt returns an admission receipt, not the assistant reply.
+          // The synchronous V1 contract must wait before reading the verdict.
+          if (typeof session.wait === "function") {
+            const sessionID = sessionIDOf(input)
+            await session.wait({ sessionID })
+            const messages = normalizeMessageList(await session.context({ sessionID }), sessionID)
+            const assistant = [...messages].reverse().find(message => message.info?.role === "assistant" || message.role === "assistant")
+            return assistant ? { parts: assistant.parts } : admitted
+          }
+          return admitted
         } catch (error) {
           return { error: toErrorInfo(error) }
         }
@@ -553,7 +575,7 @@ export function createV2Client(ctx, host = createHostState()) {
       },
       ...(typeof session.remove === "function"
         ? {
-            async remove(input) {
+            async delete(input) {
               return await session.remove({ sessionID: sessionIDOf(input) })
             },
           }
@@ -631,13 +653,13 @@ export function normalizeCommandName(value) {
  * @param {(context: {client: unknown, directory?: string}, options: object) => Promise<object>} goalPluginFactory
  */
 export function createV2Setup(goalPluginFactory) {
-  return async function setup(ctx) {
+  const setupInstance = async function setup(ctx) {
     const host = createHostState()
-    const client = createV2Client(ctx, host)
     const directory = ctx?.location?.directory || process.cwd()
     // V2's session API only speaks the flat argument shape; the compatibility
     // adapter probes the legacy generated-client shape otherwise.
     const options = { ...(isPlainObject(ctx?.options) ? ctx.options : {}), sdkShape: "flat" }
+    const client = createV2Client(ctx, host, options)
     const hooks = await goalPluginFactory({ client, directory }, options)
 
     const registrations = []
@@ -1021,12 +1043,10 @@ export function createV2Setup(goalPluginFactory) {
         // `verifierRegistrationReady` false and fails audits closed.
         const config = { agent: {} }
         try {
-          if (typeof ctx.agent.get === "function") {
-            const existing = unwrap(await ctx.agent.get({ agentID: verifierAgentName }))
-            const owned = nativeAgentConfigInternals.VERIFIER_AGENT_PROMPT
-            if (existing && existing.system !== owned) {
-              config.agent[verifierAgentName] = {}
-            }
+          try {
+            await assertVerifierOwnership(ctx, verifierAgentName)
+          } catch {
+            config.agent[verifierAgentName] = {}
           }
           await hooks.config(config)
         } catch (error) {
@@ -1041,7 +1061,8 @@ export function createV2Setup(goalPluginFactory) {
 
     /* ---------------- cleanup ---------------- */
 
-    return async () => {
+    let disposePromise
+    return () => disposePromise ||= (async () => {
       host.disposed = true
       for (const timer of timers) clearTimeout(timer)
       timers.clear()
@@ -1058,6 +1079,32 @@ export function createV2Setup(goalPluginFactory) {
       } catch (error) {
         hookError("dispose", error)
       }
+    })()
+  }
+  return async function setup(ctx) {
+    // Host reloads can omit cleanup. Retire the old same-location instance
+    // explicitly; never infer abandonment from age. Survive module reloads.
+    const slot = Symbol.for("opencode-goal-plugin.v2-setups")
+    const instances = globalThis[slot] ||= new Map()
+    const key = normalizeDirectory(ctx?.location?.directory || process.cwd())
+    const previous = instances.get(key)
+    let resolveReady
+    const ready = new Promise(resolve => { resolveReady = resolve })
+    instances.set(key, ready)
+    try {
+      const disposePrevious = await previous
+      if (disposePrevious) await disposePrevious()
+      const dispose = await setupInstance(ctx)
+      const cleanup = async () => {
+        await dispose()
+        if (instances.get(key) === ready) instances.delete(key)
+      }
+      resolveReady(cleanup)
+      return cleanup
+    } catch (error) {
+      resolveReady(undefined)
+      if (instances.get(key) === ready) instances.delete(key)
+      throw error
     }
   }
 }

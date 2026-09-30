@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { z } from "zod"
 import goalPlugin, { GoalPlugin, testInternals } from "../src/goal-plugin.js"
+import { applyNativeGoalConfig } from "../src/native-agent-config.js"
 import {
   GOAL_COMMAND_DESCRIPTION,
   createHostState,
@@ -194,7 +195,7 @@ test("events from another location are dropped before they reach the goal core",
   assert.equal(eventBelongsToLocation(foreign, own), false)
   assert.equal(eventBelongsToLocation(local, own), true)
   // Trailing separators and case must not matter on Windows.
-  assert.equal(eventBelongsToLocation({ ...local, location: { directory: "C:\\PROJ\\APP\\" } }, own), true)
+  assert.equal(eventBelongsToLocation({ ...local, location: { directory: "C:\\PROJ\\APP\\" } }, own), process.platform === "win32")
   // A host that reports no location behaves like V1 (project-scoped) delivery.
   assert.equal(eventBelongsToLocation(unscoped, own), true)
   assert.equal(eventBelongsToLocation(foreign, ""), true)
@@ -525,6 +526,81 @@ function createFakeCtx({ events = [], commands = [], pluginOptions = {} } = {}) 
 const settle = async (rounds = 4) => {
   for (let i = 0; i < rounds; i += 1) await new Promise((resolve) => setImmediate(resolve))
 }
+
+test("failed required agent switches never submit a prompt", async () => {
+  const { ctx, calls } = fakeClientHost()
+  ctx.session.switchAgent = async () => { throw new Error("agent unavailable") }
+  const client = createV2Client(ctx).session
+  for (const operation of ["prompt", "promptAsync"]) {
+    const result = await client[operation]({ sessionID: "child", agent: "goal-verify", parts: [{ type: "text", text: "audit" }] })
+    assert.match(result.error.message, /agent unavailable/)
+  }
+  assert.equal(calls.length, 0)
+})
+
+test("V2 verifier ownership is checked before each prompt, including permission changes", async () => {
+  const { ctx, calls } = fakeClientHost()
+  const native = applyNativeGoalConfig({}).agent["goal-verify"]
+  const owned = translateV1Agent("goal-verify", native)
+  let actual
+  ctx.agent = { get: async () => actual }
+  const client = createV2Client(ctx, createHostState(), { completionAudit: true }).session
+  const input = { sessionID: "child", agent: "goal-verify", parts: [{ type: "text", text: "audit" }] }
+  for (const foreign of [undefined, { ...owned, system: "foreign prompt" }, { ...owned, permissions: [...owned.permissions, { action: "shell", resource: "*", effect: "allow" }] }]) {
+    actual = foreign
+    assert.match((await client.prompt(input)).error.message, /ownership or permissions/)
+    assert.equal(calls.length, 0)
+  }
+  actual = owned
+  assert.equal((await client.prompt(input)).error, undefined)
+  assert.equal(calls.filter(call => call.name === "prompt").length, 1)
+  actual = { ...owned, system: "replaced after first audit" }
+  assert.ok((await client.prompt(input)).error)
+  assert.equal(calls.filter(call => call.name === "prompt").length, 1)
+})
+
+test("synchronous V2 audit waits for execution and maps child deletion", async () => {
+  const { ctx, calls } = fakeClientHost()
+  let finished = false
+  ctx.session.wait = async input => { assert.equal(input.sessionID, "child"); finished = true }
+  ctx.session.context = async () => {
+    assert.equal(finished, true)
+    return [{ id: "a1", type: "assistant", content: [{ type: "text", text: "[audit:approved]" }] }]
+  }
+  ctx.session.remove = async input => calls.push({ name: "remove", input })
+  const client = createV2Client(ctx).session
+  const result = await client.prompt({ sessionID: "child", parts: [{ type: "text", text: "audit" }] })
+  assert.equal(result.parts[0].text, "[audit:approved]")
+  await client.delete({ sessionID: "child" })
+  assert.deepEqual(calls.at(-1), { name: "remove", input: { sessionID: "child" } })
+})
+
+test("a rejected verifier config revokes previously confirmed completion readiness", async () => {
+  let audits = 0
+  const hooks = await GoalPlugin({ client: { session: { create: async () => { audits++; return { id: "child", parentID: "parent" } }, prompt: async () => ({ parts: [{ type: "text", text: "[audit:approved]" }] }) } } }, { persistState: false, completionAudit: true, auditMessages: false, lifecycleMessages: false })
+  try {
+    await hooks.config({})
+    await assert.rejects(hooks.config({ agent: { "goal-verify": {} } }))
+    await hooks.tool.goal_set.execute({ objective: "unfinished" }, { sessionID: "parent" })
+    const result = JSON.parse(await hooks.tool.goal_complete.execute({ summary: "done" }, { sessionID: "parent" }))
+    assert.equal(result.ok, false)
+    assert.equal(audits, 0)
+  } finally { await hooks.dispose() }
+})
+
+test("same-location setup retires the previous instance instead of stealing a live lease", async () => {
+  let disposals = 0
+  const factory = async () => ({ config: async () => {}, dispose: async () => { disposals++ } })
+  const firstCtx = createFakeCtx({ pluginOptions: { registerAgents: false } }).ctx
+  const secondCtx = createFakeCtx({ pluginOptions: { registerAgents: false } }).ctx
+  const first = await createV2Setup(factory)(firstCtx)
+  const second = await createV2Setup(factory)(secondCtx)
+  assert.equal(disposals, 1)
+  await first()
+  assert.equal(disposals, 1, "a later host cleanup is idempotent")
+  await second()
+  assert.equal(disposals, 2)
+})
 
 test("setup registers every V2 surface the goal workflow needs", async () => {
   const { ctx, registered } = createFakeCtx()

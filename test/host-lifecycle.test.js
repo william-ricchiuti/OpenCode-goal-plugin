@@ -857,54 +857,31 @@ test("passive goal tools reject honestly, remain per-session, and take over paus
   }
 })
 
-test("a same-process orphan that stops heartbeating is recovered without an explicit dispose", async () => {
-  // Models a host that reloads a location's plugin instance (a config/file
-  // watcher event under `.opencode`) without ever calling the previous
-  // instance's dispose(). The orphan's claim has a live, same-pid owner
-  // forever — only its heartbeat going stale (see DEFAULT_STALE_CLAIM_MS in
-  // persistence-lease.js) lets the successor instance recover the session.
-  const directory = await fs.mkdtemp(join(tmpdir(), "goal-plugin-orphan-heartbeat-"))
+test("an idle live plugin keeps its lease until host disposal", async () => {
+  const directory = await fs.mkdtemp(join(tmpdir(), "goal-plugin-live-idle-"))
   const stateFilePath = join(directory, "state.json")
-  const sessionID = "orphan-heartbeat-session"
+  const sessionID = "live-idle-session"
   const paths = sessionPaths(stateFilePath, sessionID)
-  let orphan
-  let successor
+  let owner, contender
   try {
-    orphan = await GoalPlugin(
-      { client: hostClient(), directory },
-      { stateFilePath, minDelayMs: 1 },
-    )
-    await setGoal(orphan, sessionID, "orphaned owner objective")
-    assert.equal(testInternals.currentGoal(sessionID)?.condition, "orphaned owner objective")
-
-    // The host drops all further references to `orphan` here (no dispose()
-    // call) and would normally spin up a fresh instance in its place.
+    owner = await GoalPlugin({ client: hostClient(), directory }, { stateFilePath })
+    await setGoal(owner, sessionID, "live owner objective")
     const claimDir = `${paths.stateFilePath}.lock.claims-v2`
-    const claimNames = (await fs.readdir(claimDir)).filter((name) => name.startsWith("claim-"))
-    assert.equal(claimNames.length, 1)
-    const orphanClaimPath = join(claimDir, claimNames[0])
-    const past = new Date(Date.now() - 10_000)
-    await fs.utimes(orphanClaimPath, past, past)
-
-    successor = await GoalPlugin(
-      { client: hostClient(), directory },
-      { stateFilePath, minDelayMs: 1, leaseStaleAfterMs: 5_000 },
-    )
-    const status = JSON.parse(await successor.tool.goal_status.execute({}, { sessionID }))
-    assert.equal(status.ok, true)
-    assert.match(status.message, /orphaned owner objective/)
-
-    const claimNamesAfter = (await fs.readdir(claimDir)).filter((name) => name.startsWith("claim-"))
-    assert.equal(claimNamesAfter.length, 1)
-    assert.notEqual(claimNamesAfter[0], claimNames[0])
-  } finally {
-    await successor?.dispose()
-    // The orphan's own claim is already gone (reclaimed by the successor);
-    // disposing it must not resurrect or corrupt the successor's ownership.
-    await orphan?.dispose()
-    assert.equal(await fs.readFile(paths.stateFilePath, "utf8").then((raw) => JSON.parse(raw).goals[0]?.condition), "orphaned owner objective")
-    await fs.rm(directory, { recursive: true, force: true })
-  }
+    const claims = (await fs.readdir(claimDir)).filter(name => name.startsWith("claim-"))
+    const past = new Date(Date.now() - 24 * 60 * 60 * 1000)
+    await fs.utimes(join(claimDir, claims[0]), past, past)
+    contender = await GoalPlugin({ client: hostClient(), directory }, { stateFilePath })
+    const denied = JSON.parse(await contender.tool.goal_status.execute({}, { sessionID }))
+    assert.equal(denied.ok, false)
+    assert.equal(denied.error, "session_owned_elsewhere")
+    assert.deepEqual((await fs.readdir(claimDir)).filter(name => name.startsWith("claim-")), claims)
+    await owner.dispose()
+    await contender.dispose()
+    contender = await GoalPlugin({ client: hostClient(), directory }, { stateFilePath })
+    const recovered = JSON.parse(await contender.tool.goal_status.execute({}, { sessionID }))
+    assert.equal(recovered.ok, true)
+    assert.match(recovered.message, /live owner objective/)
+  } finally { await contender?.dispose(); await owner?.dispose(); await fs.rm(directory, { recursive: true, force: true }) }
 })
 
 test("expired passive command guards require a fresh command boundary for takeover", async () => {

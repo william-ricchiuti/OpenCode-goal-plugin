@@ -1479,11 +1479,6 @@ function normalizePersistenceOptions(options = {}, { env = process.env, cwd } = 
       ? Math.min(options.ledgerRetentionFiles, 10)
       : DEFAULT_LEDGER_RETENTION_FILES
   const sessionDirectory = sessionDirectoryFor(stateFilePath)
-  // Test-only override for the lease staleness window (see
-  // persistence-lease.js's DEFAULT_STALE_CLAIM_MS). Production deployments
-  // never need this: the default is sized for a real host process, not a
-  // test's compressed clock.
-  const leaseStaleAfterMs = toPositiveInteger(options.leaseStaleAfterMs, undefined)
   return {
     persistState,
     stateFilePath,
@@ -1495,7 +1490,6 @@ function normalizePersistenceOptions(options = {}, { env = process.env, cwd } = 
     ledgerRetentionFiles,
     projectRoot: cwd,
     enforceProjectBoundary: !hasExplicitLocation,
-    leaseStaleAfterMs,
   }
 }
 
@@ -4468,17 +4462,7 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
     if (!persistenceOptions.persistState || !sessionID) return ACTIVE_PERSISTENCE_DISABLED
     const existingLoad = runtime.sessionLoadPromises.get(sessionID)
     if (existingLoad) return existingLoad
-    const owned = runtime.sessionPersistence.get(sessionID)
-    if (owned) {
-      // Opportunistic heartbeat: every real hook/tool call for a session this
-      // instance owns refreshes its claim's staleness clock (see
-      // persistence-lease.js's DEFAULT_STALE_CLAIM_MS). An instance that stops
-      // receiving calls for this session — because it was silently replaced by
-      // a location reload that never called its dispose() — stops touching its
-      // claim and, unlike a free-running timer, actually goes stale.
-      void owned.lease.touch().catch(() => {})
-      return ACTIVE_PERSISTENCE_OWNED
-    }
+    if (runtime.sessionPersistence.has(sessionID)) return ACTIVE_PERSISTENCE_OWNED
 
     const passive = runtime.passiveSessions.get(sessionID)
     pruneExpiredPendingCommandTurns(sessionID)
@@ -4500,9 +4484,7 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
       })
       let lease
       try {
-        lease = await acquirePersistenceLease(paths.stateFilePath, {
-          staleClaimMs: persistenceOptions.leaseStaleAfterMs,
-        })
+        lease = await acquirePersistenceLease(paths.stateFilePath)
       } catch (error) {
         if (!isPersistenceLeaseContendedError(error) && !isPersistenceLeaseUnavailableError(error)) throw error
         return enterPassiveSession(sessionID, error)
@@ -5093,6 +5075,7 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
 
   const hooks = {
     config: async (config) => {
+      if (pluginOptions.completionAudit) verifierRegistrationReady = false
       applyNativeGoalConfig(config, {
         ...pluginOptions,
         requireVerifierOwnership: Boolean(pluginOptions.completionAudit),
