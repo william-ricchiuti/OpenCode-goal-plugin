@@ -100,7 +100,7 @@ lease, budgets, tool surface, ledger) is shared code rather than a fork.
 
 | Surface | Result |
 | --- | --- |
-| Plugin load through a package spec (`opencode-goal-plugin@0.10.1`) | `state: active` in `GET /api/plugin` |
+| Package exports | Installed-tarball contracts validate the dual V1/V2 entrypoint; registry installation requires publishing this version |
 | Plugin load through a local `.opencode/plugins/<file>.js` entry | `state: active` |
 | Slash command registered through `ctx.command.transform` | `goal` listed by `GET /api/command` with the plugin's description |
 | Native agents registered through `ctx.agent.transform` | `goal` (primary) and `goal-verify` (subagent, hidden) present in `GET /api/agent` with their system prompts and translated permission rules |
@@ -206,18 +206,18 @@ entry:
 
 ```jsonc
 // OpenCode 1
-{ "plugin": ["opencode-goal-plugin@0.10.1"],
+{ "plugin": ["opencode-goal-plugin@0.11.0"],
   "command": { "goal": { "template": "$ARGUMENTS", "agent": "build" } } }
 
 // OpenCode 2 (the command entry is not needed and should be omitted)
-{ "plugins": ["opencode-goal-plugin@0.10.1"] }
+{ "plugins": ["opencode-goal-plugin@0.11.0"] }
 
 // OpenCode 2 with plugin options: repeat the exact package spec in object
 // form so the project entry — and its options — takes precedence over a
 // same-package entry in the user-level config (verified on 2.0.16; a
 // different spec, such as a local path, does not replace it).
 { "plugins": [
-  { "package": "opencode-goal-plugin@0.10.1", "options": { "sessionTitleStatus": true } }
+  { "package": "opencode-goal-plugin@0.11.0", "options": { "sessionTitleStatus": true } }
 ] }
 ```
 

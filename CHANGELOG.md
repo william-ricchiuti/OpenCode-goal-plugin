@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.11.0 — 2026-09-30
+
 - Keep live persistence owners authoritative regardless of claim age. On OpenCode 2 location reloads, explicitly dispose the previous same-process plugin instance before initializing its replacement; do not steal a live claim on a timer.
 - Fail closed when an OpenCode 2 agent switch fails or the completion verifier's identity/permissions differ from the owned definition. Revoke previously confirmed audit readiness on config conflicts, wait for the child execution before reading its verdict, and map child removal when the host exposes it.
 - Make Windows-path case assertions platform-aware while preserving POSIX location isolation.
@@ -16,9 +18,9 @@
   install step, and the type contract crashed in its final success log even
   after both `tsc` passes because it still indexed the raw result. All three
   contracts now pass locally (`type contract passed (NodeNext + Bundler;
-  opencode-goal-plugin-0.10.1.tgz)`, `packed host contract passed`,
+  opencode-goal-plugin-0.11.0.tgz)`, `packed host contract passed`,
   `packed tool contract passed … 11 tools`).
-- Extend the live OpenCode 2.0.16 verification of the 0.10.1 adapter and
+- Extend the live OpenCode 2.0.16 verification of the OpenCode 2 adapter and
   record it in `docs/compatibility.md`: command ownership over a legacy config
   `command.goal` entry on a cold boot (the plugin's framed control result is
   the admitted turn and the config template text never reaches the model), a
@@ -29,11 +31,9 @@
   prompts and translated permission rules, and the plugin-options precedence
   rule for a package listed in both user-level and project config.
 
-## 0.10.1 — 2026-09-25
-
 - Add OpenCode 2 support. The default export now carries a `setup` entrypoint next to `server`: OpenCode 1 keeps reading `id` + `server` (the V1 hook map), OpenCode 2 reads `id` + `setup` and ignores `server`, so one package serves both lines and `engines.opencode` widens from `>=1.17.15 <2` to `>=1.17.15`. The new `src/v2-bridge.js` adapts OpenCode 2's plugin context onto the existing V1 hook contract instead of forking the workflow, so the goal core (state machine, persistence lease, budgets, ledger, tool surface) is unchanged: `session.hook("prompt")` drives `chat.message`, two `session.hook("context")` registrations drive `chat.params` and the system block, `session.hook("compaction")` drives `experimental.session.compacting`, `tool.hook("execute.before")` keeps the throw-to-block contract, `tool.transform`/`agent.transform` replace the `tool` map and `config` hook (Zod v4 passes through as Standard Schema, V1 agent permission/tool maps translate to ordered V2 rules with both spellings of renamed actions), `command.transform` registers `/goal` and submits the routed control result as the prompt itself, and `event.subscribe()` normalizes the V2 stream back to the V1 event shapes (`session.execution.succeeded` → `session.idle`, `…failed` → `session.error`, `…interrupted` → abort, `session.compaction.ended` → `session.compacted`, `session.step.ended` → `message.updated`, `session.agent/model.selected` → `session.updated`). Because V2 messages carry no `parentID`, it is derived from transcript order and from the last admitted prompt; because `session.create` has no `parentID` field, the completion auditor's child records the parent link in session metadata; V2 step failures are not treated as terminal (V2 retries them) and terminal errors come from `session.execution.failed`; V2 has no `client.app.log`, so advisory diagnostics use the existing console fallback; and V2 has no post-compaction auto-continue, so `experimental.compaction.autocontinue` needs no replacement. `test/v2-bridge.test.js` pins every mapping, the session-client contract, and an end-to-end `/goal set` command turn that creates a goal instead of being read as user input.
 - Register the slash command so OpenCode 2's config ordering cannot shadow it. OpenCode 2 registers config `command`/`commands` entries *after* user plugins, which would let a legacy `command.goal` entry override the plugin's handler; the bridge re-asserts its registration after activation (retriggered by `command.updated`/`config.updated`) and warns if a foreign definition still owns the name. A config `command` entry is now required only on OpenCode 1 — OpenCode 2 users should drop it.
-- Verify OpenCode 2.0.16 against a real host: plugin load to `state: active` through both a package spec and a local `.opencode/plugins/*.js` entry, the `/goal` command listed by `GET /api/command`, and the native `goal`/`goal-verify` agents present in `GET /api/agent`. `docs/compatibility.md` now records the supported surface, the full hook mapping, the divergences above, and what is still unverified (a live-provider auto-continue run, `completionAudit` children, and the session-title indicator on 2.x). A configured plugin *directory* that contains a `package.json` is resolved by name@version into OpenCode's npm cache, so a local checkout loads only through `.opencode/plugins/<file>.js`.
+- Verify OpenCode 2.0.16 against a real host: plugin load to `state: active` through both a package spec and a local `.opencode/plugins/*.js` entry, the `/goal` command listed by `GET /api/command`, and the native `goal`/`goal-verify` agents present in `GET /api/agent`. `docs/compatibility.md` now records the supported surface, the full hook mapping, the divergences above, and the current validation boundaries. A configured plugin *directory* that contains a `package.json` is resolved by name@version into OpenCode's npm cache, so a local checkout loads only through `.opencode/plugins/<file>.js`.
 
 - On OpenCode 2, stop exposing the V1 tool aliases `get_goal` and `set_goal`, which duplicate `goal_status` and `goal_set`. Two spellings of one operation led a model to invent `get_goal_status` right after a goal was set. `get_goal_history`, `update_goal` and `clear_goal` have no canonical twin and stay; OpenCode 1 is unchanged.
 - Invalidate pending completion approvals when the objective changes, and give auditors isolated goal snapshots so an old verdict cannot complete a newly edited goal.

@@ -10,7 +10,7 @@ const runtimeRoot = process.env.OPENCODE_V2_RUNTIME_DIR
 assert.ok(runtimeRoot, "Set OPENCODE_V2_RUNTIME_DIR to an isolated installation of @opencode/cli@2.0.16 and @opencode/plugin@2.0.16; see docs/compatibility.md")
 const { make } = await import(pathToFileURL(resolve(runtimeRoot, "node_modules/@opencode/client/dist/promise/client.js")))
 
-const source = fileURLToPath(new URL("../src/goal-plugin.js", import.meta.url))
+const source = process.env.OPENCODE_GOAL_PLUGIN_SOURCE || fileURLToPath(new URL("../src/goal-plugin.js", import.meta.url))
 const binary = process.env.OPENCODE_V2_BINARY || join(runtimeRoot, "node_modules", `@opencode/cli-${process.platform}-${process.arch}`, "bin", process.platform === "win32" ? "opencode.exe" : "opencode")
 const root = await fs.mkdtemp(join(tmpdir(), "goal-v2-acceptance-"))
 const project = join(root, "project")
