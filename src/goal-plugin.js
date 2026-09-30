@@ -3259,6 +3259,7 @@ function buildAgentToolHandlers({
   announceLifecycle = () => {},
   commandName = "goal",
   agentGoalAuthority = "full",
+  holdRestrictedActivation = async () => "",
 }) {
   // "status" authority: agents may report on a goal (complete, block, pause,
   // resume) and create one when none is live, but only the user, through the
@@ -3371,17 +3372,18 @@ function buildAgentToolHandlers({
     lastGoalResults.delete(sessionID)
     registerSessionGoal(goal)
     focusGoal(sessionID, goal)
+    const heldLabel = await holdRestrictedActivation(sessionID, goal)
     await persist(sessionID)
-    announceLifecycle(sessionID, replacedGoal ? "Goal replaced and active." : "Goal active.", {
+    announceLifecycle(sessionID, heldLabel ? `Goal recorded but held while ${heldLabel} is active.` : replacedGoal ? "Goal replaced and active." : "Goal active.", {
       goal,
       transition: replacedGoal ? "replaced-active" : "active",
-      expectedState: "active",
+      expectedState: heldLabel ? "paused" : "active",
     })
     // Escape in the tool result only: goal.condition is stored raw so callers
     // that build XML (buildGoalBlock, buildContinueMessage) can apply escaping
     // themselves. Escaping here prevents XML metacharacters in user-supplied
     // objectives from breaking tool-result boundaries in XML-serialized formats.
-    return `New active goal: ${escapeGoalText(goal.condition)}`
+    return `New ${heldLabel ? "held" : "active"} goal: ${escapeGoalText(goal.condition)}`
   }
 
   async function updateGoal(sessionID, args = {}) {
@@ -3673,12 +3675,13 @@ function buildAgentToolHandlers({
         goal.stopReason = ""
         goal.blockedReason = ""
         goal.lastStatus = "Goal resumed with a fresh local budget."
+        const heldLabel = await holdRestrictedActivation(sessionID, goal)
         pushHistory(goal, "resumed", "Resumed via agent tool with a fresh local budget window.")
-        messages.push("Goal resumed with fresh limits.")
+        messages.push(heldLabel ? `Goal held while ${heldLabel} is active; switch to an executing agent before resuming.` : "Goal resumed with fresh limits.")
         lifecycleNotice = {
-          text: "Goal resumed with fresh limits.",
+          text: heldLabel ? `Goal held while ${heldLabel} is active.` : "Goal resumed with fresh limits.",
           transition: "resumed",
-          expectedState: "active",
+          expectedState: heldLabel ? "paused" : "active",
         }
       }
     }
@@ -4621,6 +4624,12 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
     announceLifecycle,
     commandName,
     agentGoalAuthority,
+    holdRestrictedActivation: async (sessionID, goal) => {
+      const agent = await restrictedAgentFor(sessionID)
+      return agent && currentGoal(sessionID) === goal && !goal.stopped
+        ? holdGoalForRestrictedAgent(goal, agent)
+        : ""
+    },
   })
 
   const abortAcceptedContinuation = async (sessionID) => {
@@ -6892,6 +6901,26 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
       if (!goal || goal.stopped) return
       output.enabled = false
     },
+  }
+
+  // Every work-starting command shares the creation guard, including add,
+  // sequence, edit, focus and resume. Record the activation for the routed
+  // chat hook, which supplies the agent on a fresh session's first command.
+  const handleGoalCommand = hooks["command.execute.before"]
+  hooks["command.execute.before"] = async (input, output) => {
+    await handleGoalCommand(input, output)
+    const turn = runtime.commandOutputs.get(output)
+    const goal = currentGoal(input?.sessionID)
+    if (turn?.policy !== "work" || !goal || goal.stopped) return
+    turn.startedGoal = { goalId: goal.goalId, runId: goal.runId }
+    const agent = await restrictedAgentFor(input.sessionID)
+    if (!agent || activeGoal(input.sessionID, turn.startedGoal.goalId, turn.startedGoal.runId) !== goal) return
+    const heldLabel = holdGoalForRestrictedAgent(goal, agent)
+    await persist(input.sessionID)
+    replaceCommandOutputText(output, buildGoalCommandNotice(goal, { heldLabel, commandName }))
+    announceLifecycle(input.sessionID, `Goal recorded but held while ${heldLabel} is active.`, {
+      goal, transition: "paused", expectedState: "paused",
+    })
   }
 
   // register_command toggle: when disabled, the plugin does not own

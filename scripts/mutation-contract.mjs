@@ -69,6 +69,20 @@ function staleAnchorMessage(mutant, occurrences) {
 
 const mutants = [
   {
+    name: "all work commands record routed Plan activation",
+    file: "src/goal-plugin.js",
+    from: "    turn.startedGoal = { goalId: goal.goalId, runId: goal.runId }",
+    to: "    void 0",
+    test: "test/plan-activation.test.js",
+  },
+  {
+    name: "agent tool creation holds in Plan mode",
+    file: "src/goal-plugin.js",
+    from: "    const heldLabel = await holdRestrictedActivation(sessionID, goal)",
+    to: "    const heldLabel = \"\"",
+    test: "test/plan-activation.test.js",
+  },
+  {
     name: "tool objective edits invalidate pending completion audits",
     file: "src/goal-plugin.js",
     from: /goal.condition = args.objective.trim\(\)([\s\S]*?)goal.runId = randomUUID\(\)/,
