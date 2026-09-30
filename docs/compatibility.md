@@ -100,7 +100,7 @@ lease, budgets, tool surface, ledger) is shared code rather than a fork.
 
 | Surface | Result |
 | --- | --- |
-| Package exports | Installed-tarball contracts validate the dual V1/V2 entrypoint; registry installation requires publishing this version |
+| Package exports | Installed-tarball contracts validate the dual V1/V2 entrypoint; the exact 0.11.0 tarball passed independent macOS host acceptance |
 | Plugin load through a local `.opencode/plugins/<file>.js` entry | `state: active` |
 | Slash command registered through `ctx.command.transform` | `goal` listed by `GET /api/command` with the plugin's description |
 | Native agents registered through `ctx.agent.transform` | `goal` (primary) and `goal-verify` (subagent, hidden) present in `GET /api/agent` with their system prompts and translated permission rules |
