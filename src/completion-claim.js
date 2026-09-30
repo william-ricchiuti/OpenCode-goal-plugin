@@ -5,6 +5,8 @@ const MAX_CHANGED_FILES = 100
 const MAX_LIMITATIONS = 20
 const MAX_CRITERION_LENGTH = 300
 const MAX_ITEM_LENGTH = 500
+const MAX_EVIDENCE_PER_CRITERION = 20
+export const MAX_COMPLETION_EVIDENCE_LENGTH = 8000
 const CHECK_RESULTS = new Set(["passed", "failed", "not-run"])
 
 function cleanStringList(values, field) {
@@ -56,6 +58,9 @@ export function serializeCompletionClaim(raw = {}) {
 
   const cleanCriteria = []
   for (const item of criteria) {
+    if (!Array.isArray(item?.evidence) || item.evidence.length > MAX_EVIDENCE_PER_CRITERION) {
+      return { ok: false, error: `each criterion requires at most ${MAX_EVIDENCE_PER_CRITERION} evidence items` }
+    }
     const criterion = typeof item?.criterion === "string" ? item.criterion.trim() : ""
     const evidence = Array.isArray(item?.evidence)
       ? item.evidence.map((value) => (typeof value === "string" ? value.trim() : "")).filter(Boolean)
@@ -88,8 +93,14 @@ export function serializeCompletionClaim(raw = {}) {
     const command = typeof item?.command === "string" ? item.command.trim() : ""
     const explanation = typeof item?.explanation === "string" ? item.explanation.trim() : ""
     const exitCode = item?.exitCode
-    if (exitCode !== undefined && (!Number.isInteger(exitCode) || exitCode < 0)) {
+    if (exitCode !== undefined && (!Number.isSafeInteger(exitCode) || exitCode < 0)) {
       return { ok: false, error: "check exitCode must be a non-negative integer" }
+    }
+    if (result === "passed" && exitCode !== undefined && exitCode !== 0) {
+      return { ok: false, error: "a passed check must have exitCode 0 when provided" }
+    }
+    if (result === "not-run" && exitCode !== undefined) {
+      return { ok: false, error: "a not-run check cannot have an exitCode" }
     }
     if (!command && !explanation) {
       return { ok: false, error: "each check requires a command or explanation" }
@@ -123,5 +134,9 @@ export function serializeCompletionClaim(raw = {}) {
   if (limitations.values.length) {
     lines.push(`Known limitations: ${limitations.values.join("; ")}`)
   }
-  return { ok: true, evidence: lines.join("\n") }
+  const evidence = lines.join("\n")
+  if (evidence.length > MAX_COMPLETION_EVIDENCE_LENGTH) {
+    return { ok: false, error: `completion evidence must be ${MAX_COMPLETION_EVIDENCE_LENGTH} characters or fewer` }
+  }
+  return { ok: true, evidence }
 }

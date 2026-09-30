@@ -69,6 +69,20 @@ function staleAnchorMessage(mutant, occurrences) {
 
 const mutants = [
   {
+    name: "passed completion checks cannot carry failed exit codes",
+    file: "src/completion-claim.js",
+    from: 'result === "passed" && exitCode !== undefined && exitCode !== 0',
+    to: "false",
+    test: "test/completion-claim.test.js",
+  },
+  {
+    name: "structured completion evidence fits its downstream budget",
+    file: "src/completion-claim.js",
+    from: "evidence.length > MAX_COMPLETION_EVIDENCE_LENGTH",
+    to: "false",
+    test: "test/completion-claim.test.js",
+  },
+  {
     name: "all work commands record routed Plan activation",
     file: "src/goal-plugin.js",
     from: "    turn.startedGoal = { goalId: goal.goalId, runId: goal.runId }",

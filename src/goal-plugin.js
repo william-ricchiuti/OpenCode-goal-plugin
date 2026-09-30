@@ -17,7 +17,7 @@ import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from
 import { z } from "zod"
 import { createOpenCodeSessionApi } from "./opencode-session-api.js"
 import { applyNativeGoalConfig } from "./native-agent-config.js"
-import { serializeCompletionClaim } from "./completion-claim.js"
+import { MAX_COMPLETION_EVIDENCE_LENGTH, serializeCompletionClaim } from "./completion-claim.js"
 import { goalToolFailure, goalToolSuccess, serializeGoalToolResult } from "./goal-tool-result.js"
 import {
   acquirePersistenceLease,
@@ -49,7 +49,7 @@ const CHECKPOINT_CHAR_LIMIT = 280
 const MAX_GOAL_OBJECTIVE_LENGTH = 4000
 const MAX_GOAL_META_LENGTH = 2000
 const MAX_GOAL_BLOCKER_LENGTH = 2000
-const MAX_LEGACY_EVIDENCE_LENGTH = 8000
+const MAX_LEGACY_EVIDENCE_LENGTH = MAX_COMPLETION_EVIDENCE_LENGTH
 const MAX_COMMAND_ARGUMENT_LENGTH = 32 * 1024
 const MAX_STATE_FILE_BYTES = 16 * 1024 * 1024
 const MAX_PERSISTED_ENTRIES = 2000
