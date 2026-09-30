@@ -10460,3 +10460,42 @@ test("canonical goal_set returns an agent_authority failure envelope under statu
   assert.equal(result.error, "agent_authority")
   assert.equal(currentGoal(sessionID).condition, "ship it")
 })
+
+test("a 2038-capped filesystem supports public goal creation and durable recovery", async (t) => {
+  const { promises: fs } = await import("node:fs")
+  const directory = await mkdtemp(join(tmpdir(), "goal-plugin-capped-filesystem-"))
+  const stateFilePath = join(directory, "state.json")
+  const sessionID = "capped-filesystem"
+  const originalOpen = fs.open.bind(fs)
+  t.mock.method(fs, "open", async (...args) => {
+    const handle = await originalOpen(...args)
+    if (String(args[0]).startsWith(directory) && String(args[0]).includes(".guard.")) {
+      const utimes = handle.utimes.bind(handle)
+      handle.utimes = (atime, mtime) => utimes(
+        new Date(Math.min(Number(atime), 2_147_483_647_000)),
+        new Date(Math.min(Number(mtime), 2_147_483_647_000)),
+      )
+    }
+    return handle
+  })
+  const client = { app: { log: async () => {} }, session: { messages: async () => ({ data: [] }), promptAsync: async () => ({}) } }
+  let hooks
+  try {
+    hooks = await GoalPlugin({ directory, client }, { stateFilePath })
+    const result = JSON.parse(await hooks.tool.goal_set.execute({ objective: "persist on capped timestamps" }, { sessionID, agent: "build" }))
+    assert.equal(result.ok, true)
+    const saved = JSON.parse(await readFile(sessionStatePath(stateFilePath, sessionID), "utf8"))
+    assert.equal(saved.goals[0].condition, "persist on capped timestamps")
+    await hooks.dispose()
+    hooks = await GoalPlugin({ directory, client }, { stateFilePath })
+    const recovered = JSON.parse(await hooks.tool.goal_status.execute({}, { sessionID, agent: "build" }))
+    assert.equal(recovered.ok, true)
+    assert.equal(currentGoal(sessionID).condition, "persist on capped timestamps")
+    assert.equal(currentGoal(sessionID).stopped, true)
+    assert.equal(currentGoal(sessionID).stopReason, "recovered after restart")
+  } finally {
+    await hooks?.dispose()
+    t.mock.restoreAll()
+    await rm(directory, { recursive: true, force: true })
+  }
+})

@@ -1358,3 +1358,148 @@ test("workspace persistence and lifecycle ledgers remain isolated", async () => 
   assert.match(secondLedger, /session-persist-two/)
   assert.doesNotMatch(secondLedger, /session-persist-one/)
 })
+
+test("lease capability failures leave every ordinary hook usable and goal controls passive", async (t) => {
+  for (const failure of ["ENOSYS", "ENOTSUP", "path", "timestamp"]) {
+    await t.test(failure, async (t) => {
+      const directory = await fs.mkdtemp(join(tmpdir(), "goal-plugin-lease-capability-"))
+      const stateFilePath = join(directory, "state.json")
+      const logs = []
+      const promptCalls = []
+      const originalLink = fs.link.bind(fs)
+      let hooks
+      try {
+        if (failure === "timestamp") {
+          const originalOpen = fs.open.bind(fs)
+          t.mock.method(fs, "open", async (...args) => {
+            const handle = await originalOpen(...args)
+            if (String(args[0]).startsWith(directory) && String(args[0]).includes(".guard.")) {
+              const utimes = handle.utimes.bind(handle)
+              handle.utimes = () => utimes(new Date(0), new Date(0))
+            }
+            return handle
+          })
+        } else if (failure !== "path") {
+          t.mock.method(fs, "link", async (source, target) => {
+            if (target.startsWith(directory)) throw Object.assign(new Error("private filesystem detail"), { code: failure })
+            return originalLink(source, target)
+          })
+        }
+        hooks = await GoalPlugin({ directory, client: {
+          ...hostClient({ promptAsync: async (input) => { promptCalls.push(input); return {} } }),
+          app: { log: async (entry) => logs.push(entry) },
+        } }, { stateFilePath, minDelayMs: 1 })
+        // Each hook is the first access in its own session, so a cached passive
+        // result cannot hide a throwing initialization path in another hook.
+        const accesses = [
+          async (id) => hooks["chat.params"]({ sessionID: id, agent: "build" }),
+          async (id) => {
+            const output = { message: { id: "user", role: "user", sessionID: id }, parts: [{ type: "text", text: "hello" }] }
+            await hooks["chat.message"]({ sessionID: id, messageID: "user", agent: "build" }, output)
+            assert.deepEqual(output.parts, [{ type: "text", text: "hello" }])
+          },
+          async (id) => hooks["tool.execute.before"]({ sessionID: id, tool: "read" }),
+          async (id) => {
+            const output = { system: ["base"] }
+            await hooks["experimental.chat.system.transform"]({ sessionID: id }, output)
+            assert.deepEqual(output, { system: ["base"] })
+          },
+          async (id) => {
+            const output = { context: ["base"] }
+            await hooks["experimental.session.compacting"]({ sessionID: id }, output)
+            assert.deepEqual(output, { context: ["base"] })
+          },
+          async (id) => idle(hooks, id),
+        ]
+        for (const [index, access] of accesses.entries()) {
+          const id = `capability-${failure}-${index}`
+          const paths = sessionPaths(stateFilePath, id)
+          await fs.mkdir(dirname(paths.stateFilePath), { recursive: true })
+          const saved = JSON.stringify({ version: 1, goals: [{ sessionID: id, condition: "private saved goal", startedAt: Date.now(), options: {} }], results: [] })
+          await fs.writeFile(paths.stateFilePath, saved)
+          if (failure === "path") await fs.writeFile(`${paths.stateFilePath}.lock.claims-v2`, "do not replace")
+          await access(id)
+          await idle(hooks, id)
+          const result = JSON.parse(await hooks.tool.goal_set.execute({ objective: "must not start" }, { sessionID: id }))
+          assert.equal(result.ok, false)
+          assert.equal(result.error, "persistence_unavailable")
+          assert.match(result.message, /Ordinary chat remains available/)
+          assert.doesNotMatch(result.message, /another process owns|private filesystem detail|private saved goal/)
+          const command = await setGoal(hooks, id, "status")
+          assert.match(command.parts[0].text, /filesystem|lease paths/)
+          assert.equal(testInternals.currentGoal(id), null)
+          assert.equal(await fs.readFile(paths.stateFilePath, "utf8"), saved)
+          assert.equal(await readMaybe(paths.ledgerFilePath), null)
+          if (failure === "path") assert.equal(await fs.readFile(`${paths.stateFilePath}.lock.claims-v2`, "utf8"), "do not replace")
+        }
+        assert.equal(promptCalls.length, 0)
+        assert.equal(logs.length, accesses.length)
+        assert.ok(logs.every((entry) => /filesystem|lease paths/.test(entry.body.message)))
+      } finally {
+        await hooks?.dispose()
+        t.mock.restoreAll()
+        await fs.rm(directory, { recursive: true, force: true })
+      }
+    })
+  }
+})
+
+test("migration lease capability failures release the shard and retry explicitly into paused recovery", async (t) => {
+  const directory = await fs.mkdtemp(join(tmpdir(), "goal-plugin-migration-capability-"))
+  const stateFilePath = join(directory, "state.json")
+  const sessionID = "migration-capability"
+  const paths = sessionPaths(stateFilePath, sessionID)
+  const originalLink = fs.link.bind(fs)
+  let failedLinks = 0
+  let hooks
+  try {
+    await fs.mkdir(dirname(paths.stateFilePath), { recursive: true })
+    const saved = JSON.stringify({ version: 1, goals: [{ sessionID, condition: "recover me paused", startedAt: Date.now(), options: {} }], results: [] })
+    await fs.writeFile(paths.stateFilePath, saved)
+    t.mock.method(fs, "link", async (source, target) => {
+      if (target === `${stateFilePath}.lock`) {
+        failedLinks += 1
+        throw Object.assign(new Error("unsupported"), { code: "ENOSYS" })
+      }
+      return originalLink(source, target)
+    })
+    hooks = await GoalPlugin({ directory, client: hostClient() }, { stateFilePath, minDelayMs: 1 })
+    await hooks["chat.params"]({ sessionID, agent: "build" })
+    assert.equal(failedLinks, 1)
+    assert.equal(await fs.readFile(paths.stateFilePath, "utf8"), saved)
+    assert.deepEqual(await fs.readdir(`${paths.stateFilePath}.lock.claims-v2`), [])
+    assert.equal(testInternals.currentGoal(sessionID), null)
+    t.mock.restoreAll()
+    await new Promise((resolve) => setTimeout(resolve, 275))
+    await hooks["chat.params"]({ sessionID, agent: "build" })
+    assert.equal(testInternals.currentGoal(sessionID), null)
+    const result = JSON.parse(await hooks.tool.goal_status.execute({}, { sessionID, agent: "build" }))
+    assert.equal(result.ok, true)
+    assert.equal(testInternals.currentGoal(sessionID).condition, "recover me paused")
+    assert.equal(testInternals.currentGoal(sessionID).stopped, true)
+    assert.equal(testInternals.currentGoal(sessionID).stopReason, "recovered after restart")
+  } finally {
+    await hooks?.dispose()
+    t.mock.restoreAll()
+    await fs.rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("unexpected lease IO errors still surface instead of being mislabeled as capability failures", async (t) => {
+  const directory = await fs.mkdtemp(join(tmpdir(), "goal-plugin-lease-io-"))
+  const originalLink = fs.link.bind(fs)
+  let hooks
+  try {
+    t.mock.method(fs, "link", async (source, target) => {
+      if (target.startsWith(directory)) throw Object.assign(new Error("IO failure"), { code: "EIO" })
+      return originalLink(source, target)
+    })
+    hooks = await GoalPlugin({ directory, client: hostClient() }, { stateFilePath: join(directory, "state.json") })
+    await assert.rejects(hooks["chat.params"]({ sessionID: "io-session", agent: "build" }), { code: "EIO" })
+    assert.equal(testInternals.currentGoal("io-session"), null)
+  } finally {
+    await hooks?.dispose()
+    t.mock.restoreAll()
+    await fs.rm(directory, { recursive: true, force: true })
+  }
+})

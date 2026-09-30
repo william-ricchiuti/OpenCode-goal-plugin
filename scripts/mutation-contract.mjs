@@ -69,6 +69,41 @@ function staleAnchorMessage(mutant, occurrences) {
 
 const mutants = [
   {
+    name: "guard timestamps work on signed 32-bit filesystems",
+    file: "src/persistence-lease.js",
+    from: "const LEGACY_GUARD_MTIME_MS = Date.UTC(2038, 0, 1)",
+    to: "const LEGACY_GUARD_MTIME_MS = Date.UTC(2100, 0, 1)",
+    test: "test/persistence-lease.test.js",
+  },
+  {
+    name: "expired compatibility guards fail closed",
+    file: "src/persistence-lease.js",
+    from: "info.mtimeMs > now + LEGACY_GUARD_MIN_FUTURE_MS",
+    to: "true",
+    test: "test/persistence-lease.test.js",
+  },
+  {
+    name: "ENOSYS hard links enter the capability failure path",
+    file: "src/persistence-lease.js",
+    from: '["EPERM", "EOPNOTSUPP", "ENOTSUP", "EXDEV", "ENOSYS"]',
+    to: '["EPERM", "EOPNOTSUPP", "ENOTSUP", "EXDEV"]',
+    test: "test/persistence-lease.test.js",
+  },
+  {
+    name: "lease capability failures keep ordinary host hooks usable",
+    file: "src/goal-plugin.js",
+    from: "if (!isPersistenceLeaseContendedError(error) && !isPersistenceLeaseUnavailableError(error)) throw error",
+    to: "if (!isPersistenceLeaseContendedError(error)) throw error",
+    test: "test/host-lifecycle.test.js",
+  },
+  {
+    name: "migration lease capability failures also stay passive",
+    file: "src/goal-plugin.js",
+    from: "if (isPersistenceLeaseUnavailableError(error)) return enterPassiveSession(sessionID, error)",
+    to: "if (false) return enterPassiveSession(sessionID, error)",
+    test: "test/host-lifecycle.test.js",
+  },
+  {
     name: "built-in verifier inherits the configured SDK shape",
     file: "src/goal-plugin.js",
     from: 'sdkShape: pluginOptions.sdkShape === "flat" ? "flat" : "legacy",',
@@ -445,7 +480,7 @@ const mutants = [
   {
     name: "session storage failures remain fatal",
     file: "src/goal-plugin.js",
-    from: "      } catch (error) {\n        if (!isPersistenceLeaseContendedError(error)) throw error\n        return enterPassiveSession(sessionID, error)\n      }",
+    from: "      } catch (error) {\n        if (!isPersistenceLeaseContendedError(error) && !isPersistenceLeaseUnavailableError(error)) throw error\n        return enterPassiveSession(sessionID, error)\n      }",
     to: "      } catch (error) {\n        if (false) throw error\n        return enterPassiveSession(sessionID, error)\n      }",
     test: "test/goal-plugin.test.js",
   },
@@ -459,8 +494,8 @@ const mutants = [
   {
     name: "passive load results cannot masquerade as active",
     file: "src/goal-plugin.js",
-    from: "  const passiveLoadResult = (entry) => ({\n    kind: \"passive\",\n    code: SESSION_OWNED_ELSEWHERE,",
-    to: "  const passiveLoadResult = (entry) => ({\n    kind: \"active\",\n    code: SESSION_OWNED_ELSEWHERE,",
+    from: "  const passiveLoadResult = (entry) => ({\n    kind: \"passive\",\n    code: entry.code,",
+    to: "  const passiveLoadResult = (entry) => ({\n    kind: \"active\",\n    code: entry.code,",
     test: "test/host-lifecycle.test.js",
   },
   {

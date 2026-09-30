@@ -22,6 +22,7 @@ import { goalToolFailure, goalToolSuccess, serializeGoalToolResult } from "./goa
 import {
   acquirePersistenceLease,
   isPersistenceLeaseContendedError,
+  isPersistenceLeaseUnavailableError,
 } from "./persistence-lease.js"
 
 const STATE_FILE_VERSION = 1
@@ -65,6 +66,7 @@ const MIGRATION_LEASE_RETRIES = 200
 const MIGRATION_LEASE_DELAY_MS = 25
 const PASSIVE_SESSION_RETRY_MS = 250
 const SESSION_OWNED_ELSEWHERE = "session_owned_elsewhere"
+const PERSISTENCE_UNAVAILABLE = "persistence_unavailable"
 const ACTIVE_PERSISTENCE_DISABLED = Object.freeze({ kind: "active", persistence: "disabled" })
 const ACTIVE_PERSISTENCE_OWNED = Object.freeze({ kind: "active", persistence: "owned" })
 const PLUGIN_DISPOSED = Object.freeze({ kind: "disposed" })
@@ -3762,6 +3764,17 @@ function sessionOwnedElsewhereMessage(
   const retryTarget = commandRegistered
     ? `\`/${commandName} status\``
     : "the `goal_status` tool"
+  if (reason === "path" || reason === "hardlink") {
+    const cause = reason === "hardlink"
+      ? "the filesystem cannot publish the required hard-link guard"
+      : "the lease paths have an unsafe layout or the filesystem cannot preserve a safe future guard timestamp"
+    return (
+      `Goal controls are unavailable because ${cause}. ` +
+      "Ordinary chat remains available; goal state will not be loaded or changed while passive. " +
+      "Close OpenCode processes using this session before repairing the lease paths or moving persistence to a filesystem that supports regular-file hard links and future timestamps, " +
+      `then retry ${retryTarget}.`
+    )
+  }
   if (reason === "legacy_lock") {
     return (
       "Goal controls are unavailable because this session has an older or incomplete persistence lease. " +
@@ -3788,7 +3801,7 @@ function inactiveGoalToolResult(
   }
   if (loadResult?.kind === "passive") {
     return goalToolFailure(
-      SESSION_OWNED_ELSEWHERE,
+      loadResult.code,
       sessionOwnedElsewhereMessage(commandName, commandRegistered, loadResult.reason),
     )
   }
@@ -4395,7 +4408,7 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
 
   const passiveLoadResult = (entry) => ({
     kind: "passive",
-    code: SESSION_OWNED_ELSEWHERE,
+    code: entry.code,
     reason: entry.reason,
     owner: entry.owner,
     retryAt: entry.retryAt,
@@ -4408,7 +4421,9 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
       preserveExecutionContext: true,
     })
     const entry = {
-      code: SESSION_OWNED_ELSEWHERE,
+      code: isPersistenceLeaseUnavailableError(error)
+        ? PERSISTENCE_UNAVAILABLE
+        : SESSION_OWNED_ELSEWHERE,
       reason: error.reason,
       owner: error.owner,
       firstObservedAt: previous?.firstObservedAt || Date.now(),
@@ -4420,7 +4435,9 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
       const owner = entry.owner?.pid && entry.owner?.hostname
         ? `pid ${entry.owner.pid} on ${entry.owner.hostname}`
         : "another process"
-      const warning = entry.reason === "legacy_lock"
+      const warning = entry.code === PERSISTENCE_UNAVAILABLE
+        ? sessionOwnedElsewhereMessage(commandName, registerCommand, entry.reason)
+        : entry.reason === "legacy_lock"
         ? "Goal controls are passive for this session because its persistence lease is from an older release or is incomplete. Ordinary chat remains available. Close every OpenCode process using this session and upgrade them; if the report persists, remove only the affected session shard's adjacent lease artifacts (`.lock` and `.lock.claims-v2`) or fork the session before retrying goal controls."
         : `Goal controls are passive for this session because ${owner} owns its persistence lease. Ordinary chat remains available; close the owner or fork the session before retrying goal controls.`
       // Host logging is advisory. A broken or backpressured logger must not
@@ -4467,7 +4484,7 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
       try {
         lease = await acquirePersistenceLease(paths.stateFilePath)
       } catch (error) {
-        if (!isPersistenceLeaseContendedError(error)) throw error
+        if (!isPersistenceLeaseContendedError(error) && !isPersistenceLeaseUnavailableError(error)) throw error
         return enterPassiveSession(sessionID, error)
       }
       const releaseDisposedSession = async () => {
@@ -4529,6 +4546,7 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
       } catch (error) {
         runtime.sessionPersistence.delete(sessionID)
         await lease.release().catch(() => false)
+        if (isPersistenceLeaseUnavailableError(error)) return enterPassiveSession(sessionID, error)
         throw error
       }
     })()

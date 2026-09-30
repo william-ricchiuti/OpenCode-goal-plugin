@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix persistence lease acquisition on filesystems that cap timestamps at 2038. New compatibility guards use a representable timestamp, existing 2100 guards remain valid, and expiring guards fail closed.
+- Keep ordinary chat available when goal leases encounter unsupported hard links (including `ENOSYS`), unsafe lease paths, or an unusable guard timestamp. Goal controls return `persistence_unavailable` with recovery guidance; migration failures release the session lease before entering passive mode.
+
 ## 0.10.0 — 2026-09-06
 
 - Fix the plan-mode guard failing open on the first command of a session. OpenCode runs `command.execute.before` before any chat hook for the turn and its `Session` record carries no `agent` field, so the session-record fallback introduced in 0.9.0 could never learn the agent for a `/goal <objective>` sent as a fresh session's first turn: the goal started live and the routed text told the model to begin work. The routed turn itself carries the agent, so `chat.message` now re-evaluates the planning-only restriction for the goal that command created and, when the agent is restricted, holds the goal (`plan agent active`, budget preserved), rewrites the turn as a read-only control turn, and blocks tools for it. Reproduced, and verified fixed, against live OpenCode 1.18.25 and 1.18.29 over the HTTP `command` API with `agent: "plan"` and a `goal` command that does not pin an agent; the case where an earlier turn had already reported the agent was unaffected. Note that OpenCode runs a command under its configured `agent` when one is set (`cmd.agent ?? input.agent`), so with the README's `"agent": "build"` the `/goal` turn executes as `build` and a hold can only come from a previously reported planning-only agent; the README's plan-mode section now spells this out. Pinned by a new mutation-contract entry.
