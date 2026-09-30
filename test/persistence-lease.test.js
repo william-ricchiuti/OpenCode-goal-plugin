@@ -1253,3 +1253,86 @@ test("persistence lease treats an invalid regular guard as manual-recovery conte
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test("2038-capped guard timestamps preserve exclusive ownership and legacy exclusion", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-lease-2038-cap-"))
+  const state = join(dir, "state.json")
+  const { promises: fs } = await import("node:fs")
+  const originalOpen = fs.open.bind(fs)
+  const cap = 2_147_483_647_000
+  t.mock.method(fs, "open", async (...args) => {
+    const handle = await originalOpen(...args)
+    if (String(args[0]).startsWith(`${state}.lock.guard.`)) {
+      const utimes = handle.utimes.bind(handle)
+      handle.utimes = (atime, mtime) => utimes(
+        new Date(Math.min(Number(atime), cap)),
+        new Date(Math.min(Number(mtime), cap)),
+      )
+    }
+    return handle
+  })
+  let lease
+  try {
+    lease = await acquirePersistenceLease(state)
+    const guardInfo = await stat(`${state}.lock`)
+    assert.ok(guardInfo.mtimeMs <= cap)
+    assert.ok(guardInfo.mtimeMs > Date.now())
+    await assert.rejects(acquirePersistenceLease(state), isPersistenceLeaseContendedError)
+    await assert.rejects(acquireVersion1Lease(state), /version-1 lease contended/)
+    await lease.release()
+    lease = await acquirePersistenceLease(state)
+    assert.equal((await stat(`${state}.lock`)).ino, guardInfo.ino)
+    assert.equal((await stat(`${state}.lock`)).mtimeMs, guardInfo.mtimeMs)
+    assert.deepEqual((await readdir(dir)).filter((name) => name.includes(".guard.")), [])
+  } finally {
+    await lease?.release()
+    t.mock.restoreAll()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("existing 2100 compatibility guards are accepted without rewriting them", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-lease-old-guard-"))
+  const state = join(dir, "state.json")
+  const lock = `${state}.lock`
+  let lease
+  try {
+    const sentinel = JSON.stringify(persistenceLeaseInternals.legacySentinel())
+    await writeFile(lock, sentinel)
+    const future = new Date(Date.UTC(2100, 0, 1))
+    await utimes(lock, future, future)
+    const before = await stat(lock)
+    lease = await acquirePersistenceLease(state)
+    assert.equal(await readFile(lock, "utf8"), sentinel)
+    assert.equal((await stat(lock)).ino, before.ino)
+    assert.equal((await stat(lock)).mtimeMs, before.mtimeMs)
+  } finally {
+    await lease?.release()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("compatibility guards fail closed near expiry, including after 2038", () => {
+  const safe = persistenceLeaseInternals.legacyGuardMtimeIsSafe
+  const portable = Date.UTC(2038, 0, 1)
+  assert.equal(safe({ mtimeMs: portable }, portable - 30_001), true)
+  assert.equal(safe({ mtimeMs: portable }, portable - 30_000), false)
+  assert.equal(safe({ mtimeMs: portable }, Date.UTC(2039, 0, 1)), false)
+  assert.equal(safe({ mtimeMs: Date.UTC(2100, 0, 1) }, Date.UTC(2039, 0, 1)), true)
+  assert.equal(safe({ mtimeMs: NaN }), false)
+  assert.equal(safe({ mtimeMs: Infinity }), false)
+})
+
+test("ENOSYS hard-link failures are classified and leave no guard or claim", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-lease-enosys-"))
+  try {
+    await assert.rejects(persistenceLeaseInternals.acquirePersistenceLeaseWithHooks(
+      join(dir, "state.json"), {}, {
+        linkGuard: async () => { throw Object.assign(new Error("not implemented"), { code: "ENOSYS" }) },
+      },
+    ), { code: "ERR_GOAL_PERSISTENCE_LEASE_HARDLINK" })
+    assert.deepEqual(await readdir(dir), [])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

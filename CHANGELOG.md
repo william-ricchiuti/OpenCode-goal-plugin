@@ -46,6 +46,13 @@
 - Verify OpenCode 2.0.16 against a real host: plugin load to `state: active` through both a package spec and a local `.opencode/plugins/*.js` entry, the `/goal` command listed by `GET /api/command`, and the native `goal`/`goal-verify` agents present in `GET /api/agent`. `docs/compatibility.md` now records the supported surface, the full hook mapping, the divergences above, and what is still unverified (a live-provider auto-continue run, `completionAudit` children, and the session-title indicator on 2.x). A configured plugin *directory* that contains a `package.json` is resolved by name@version into OpenCode's npm cache, so a local checkout loads only through `.opencode/plugins/<file>.js`.
 
 - On OpenCode 2, stop exposing the V1 tool aliases `get_goal` and `set_goal`, which duplicate `goal_status` and `goal_set`. Two spellings of one operation led a model to invent `get_goal_status` right after a goal was set. `get_goal_history`, `update_goal` and `clear_goal` have no canonical twin and stay; OpenCode 1 is unchanged.
+- Invalidate pending completion approvals when the objective changes, and give auditors isolated goal snapshots so an old verdict cannot complete a newly edited goal.
+- Apply the planning-only agent hold to every work command, including add, sequence, resume and focus, and to goal creation/resume tools. Preserve routed first-turn protection when the host reports its agent after the command hook.
+- Reject contradictory completion check results, invalid exit codes, excessive per-criterion evidence and structured evidence that exceeds the completion budget.
+- Return structured failures from canonical goal creation when validation fails, including invalid budgets, while preserving legacy tool messages.
+- Honor the configured SDK shape in the built-in completion verifier's create, prompt, timeout abort and cleanup calls.
+- Fix persistence lease acquisition on filesystems that cap timestamps at 2038. New compatibility guards use a representable timestamp, existing 2100 guards remain valid, and expiring guards fail closed.
+- Keep ordinary chat available when goal leases encounter unsupported hard links (including `ENOSYS`), unsafe lease paths, or an unusable guard timestamp. Goal controls return `persistence_unavailable` with recovery guidance; migration failures release the session lease before entering passive mode.
 
 ## 0.10.0 — 2026-09-06
 

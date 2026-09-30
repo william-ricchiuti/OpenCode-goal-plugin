@@ -7,7 +7,10 @@ export const PERSISTENCE_LEASE_CONTENDED = "GOAL_PERSISTENCE_LEASE_CONTENDED"
 const LEASE_PROTOCOL_VERSION = 2
 const LEGACY_SENTINEL_TOKEN = "opencode-goal-plugin-immutable-claims-v2"
 const LEGACY_SENTINEL_HOSTNAME = "opencode-goal-plugin-v2.invalid"
-const LEGACY_GUARD_MTIME_MS = Date.UTC(2100, 0, 1)
+// Stay below the signed 32-bit seconds limit used by some filesystems.
+// Existing 2100 guards remain valid; never rewrite a published guard.
+const LEGACY_GUARD_MTIME_MS = Date.UTC(2038, 0, 1)
+const LEGACY_GUARD_MIN_FUTURE_MS = 30_000
 const LEGACY_GUARD_MTIME_TOLERANCE_MS = 2_000
 const CLAIM_DIRECTORY_SUFFIX = ".claims-v2"
 const CLAIM_PREFIX = "claim-"
@@ -91,18 +94,29 @@ export function isPersistenceLeaseContendedError(error) {
   return error instanceof PersistenceLeaseContendedError
 }
 
+class PersistenceLeaseUnavailableError extends Error {
+  constructor(reason) {
+    super(reason === "hardlink"
+      ? "goal persistence requires same-filesystem hard-link support for its compatibility guard"
+      : "goal persistence lease paths must use their expected real file types and preserve a safe future guard timestamp")
+    this.name = "PersistenceLeaseUnavailableError"
+    this.reason = reason
+    this.code = reason === "hardlink"
+      ? "ERR_GOAL_PERSISTENCE_LEASE_HARDLINK"
+      : "ERR_GOAL_PERSISTENCE_LEASE_PATH"
+  }
+}
+
+export function isPersistenceLeaseUnavailableError(error) {
+  return error instanceof PersistenceLeaseUnavailableError
+}
+
 function persistenceLeasePathError() {
-  const error = new Error("goal persistence lease paths must use their expected real file types")
-  error.code = "ERR_GOAL_PERSISTENCE_LEASE_PATH"
-  return error
+  return new PersistenceLeaseUnavailableError("path")
 }
 
 function persistenceLeaseHardLinkError() {
-  const error = new Error(
-    "goal persistence requires same-filesystem hard-link support for its compatibility guard",
-  )
-  error.code = "ERR_GOAL_PERSISTENCE_LEASE_HARDLINK"
-  return error
+  return new PersistenceLeaseUnavailableError("hardlink")
 }
 
 function processIsAlive(pid) {
@@ -309,10 +323,13 @@ function validLegacySentinel(owner) {
   )
 }
 
-function legacyGuardMtimeIsSafe(info) {
+function legacyGuardMtimeIsSafe(info, now = Date.now()) {
   return (
     Number.isFinite(info?.mtimeMs) &&
-    info.mtimeMs >= LEGACY_GUARD_MTIME_MS - LEGACY_GUARD_MTIME_TOLERANCE_MS
+    info.mtimeMs >= LEGACY_GUARD_MTIME_MS - LEGACY_GUARD_MTIME_TOLERANCE_MS &&
+    // Fail closed as the portable sentinel expires, rather than let a legacy
+    // client reclaim it while a current client believes it owns the lease.
+    info.mtimeMs > now + LEGACY_GUARD_MIN_FUTURE_MS
   )
 }
 
@@ -353,7 +370,7 @@ function throwForGuardStatus(guard) {
 }
 
 function hardLinkUnsupported(error) {
-  return ["EPERM", "EOPNOTSUPP", "ENOTSUP", "EXDEV"].includes(error?.code)
+  return ["EPERM", "EOPNOTSUPP", "ENOTSUP", "EXDEV", "ENOSYS"].includes(error?.code)
 }
 
 async function publishLegacyGuard(

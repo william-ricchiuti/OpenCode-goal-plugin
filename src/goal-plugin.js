@@ -18,11 +18,12 @@ import { z } from "zod"
 import { createOpenCodeSessionApi } from "./opencode-session-api.js"
 import { createV2Setup } from "./v2-bridge.js"
 import { applyNativeGoalConfig } from "./native-agent-config.js"
-import { serializeCompletionClaim } from "./completion-claim.js"
+import { MAX_COMPLETION_EVIDENCE_LENGTH, serializeCompletionClaim } from "./completion-claim.js"
 import { goalToolFailure, goalToolSuccess, serializeGoalToolResult } from "./goal-tool-result.js"
 import {
   acquirePersistenceLease,
   isPersistenceLeaseContendedError,
+  isPersistenceLeaseUnavailableError,
 } from "./persistence-lease.js"
 
 const STATE_FILE_VERSION = 1
@@ -50,7 +51,7 @@ const CHECKPOINT_CHAR_LIMIT = 280
 const MAX_GOAL_OBJECTIVE_LENGTH = 4000
 const MAX_GOAL_META_LENGTH = 2000
 const MAX_GOAL_BLOCKER_LENGTH = 2000
-const MAX_LEGACY_EVIDENCE_LENGTH = 8000
+const MAX_LEGACY_EVIDENCE_LENGTH = MAX_COMPLETION_EVIDENCE_LENGTH
 const MAX_COMMAND_ARGUMENT_LENGTH = 32 * 1024
 const MAX_STATE_FILE_BYTES = 16 * 1024 * 1024
 const MAX_PERSISTED_ENTRIES = 2000
@@ -66,6 +67,7 @@ const MIGRATION_LEASE_RETRIES = 200
 const MIGRATION_LEASE_DELAY_MS = 25
 const PASSIVE_SESSION_RETRY_MS = 250
 const SESSION_OWNED_ELSEWHERE = "session_owned_elsewhere"
+const PERSISTENCE_UNAVAILABLE = "persistence_unavailable"
 const ACTIVE_PERSISTENCE_DISABLED = Object.freeze({ kind: "active", persistence: "disabled" })
 const ACTIVE_PERSISTENCE_OWNED = Object.freeze({ kind: "active", persistence: "owned" })
 const PLUGIN_DISPOSED = Object.freeze({ kind: "disposed" })
@@ -3267,6 +3269,7 @@ function buildAgentToolHandlers({
   announceLifecycle = () => {},
   commandName = "goal",
   agentGoalAuthority = "full",
+  holdRestrictedActivation = async () => "",
 }) {
   // "status" authority: agents may report on a goal (complete, block, pause,
   // resume) and create one when none is live, but only the user, through the
@@ -3328,30 +3331,29 @@ function buildAgentToolHandlers({
     return "No goal history recorded yet."
   }
 
-  async function setGoal(sessionID, args = {}) {
+  async function setGoalResult(sessionID, args = {}) {
     const objective = typeof args.objective === "string" ? args.objective.trim() : ""
-    if (!objective) return "No objective provided. Pass a non-empty `objective`."
+    if (!objective) return goalToolFailure("invalid_objective", "No objective provided. Pass a non-empty `objective`.")
     const replaceLock = agentLockMessage(sessionID, "replace")
-    if (replaceLock) return replaceLock
+    if (replaceLock) return goalToolFailure("agent_authority", replaceLock)
     if (objective.length > MAX_GOAL_OBJECTIVE_LENGTH)
-      return `Invalid objective: must be ${MAX_GOAL_OBJECTIVE_LENGTH} characters or fewer.`
+      return goalToolFailure("invalid_objective", `Invalid objective: must be ${MAX_GOAL_OBJECTIVE_LENGTH} characters or fewer.`)
     for (const [field, value] of [["successCriteria", args.successCriteria], ["constraints", args.constraints]]) {
       if (typeof value === "string" && value.length > MAX_GOAL_META_LENGTH)
-        return `Invalid ${field}: must be ${MAX_GOAL_META_LENGTH} characters or fewer.`
+        return goalToolFailure("invalid_metadata", `Invalid ${field}: must be ${MAX_GOAL_META_LENGTH} characters or fewer.`)
     }
 
     // Validate budget args before normalizing: normalizeOptions silently substitutes
     // defaults for non-positive values, giving no feedback to the caller.
-    if (Number.isFinite(args.maxTurns) && args.maxTurns <= 0)
-      return `Invalid maxTurns: ${args.maxTurns} — must be a positive integer.`
-    if (Number.isFinite(args.maxTokens) && args.maxTokens <= 0)
-      return `Invalid maxTokens: ${args.maxTokens} — must be a positive integer.`
-    if (Number.isFinite(args.maxDurationMs) && args.maxDurationMs <= 0)
-      return `Invalid maxDurationMs: ${args.maxDurationMs} — must be a positive number.`
-    if (Number.isFinite(args.maxCostUsd) && args.maxCostUsd <= 0)
-      return `Invalid maxCostUsd: ${args.maxCostUsd} — must be a positive number of US dollars.`
+    for (const field of ["maxTurns", "maxTokens", "maxDurationMs"]) {
+      if (args[field] !== undefined && (!Number.isSafeInteger(args[field]) || args[field] <= 0)) {
+        return goalToolFailure("invalid_budget", `Invalid ${field}: ${args[field]} — must be a positive integer.`)
+      }
+    }
+    if (args.maxCostUsd !== undefined && (typeof args.maxCostUsd !== "number" || !Number.isFinite(args.maxCostUsd) || args.maxCostUsd <= 0))
+      return goalToolFailure("invalid_budget", `Invalid maxCostUsd: ${args.maxCostUsd} — must be a positive number of US dollars.`)
     if (args.mode !== undefined && !GOAL_MODES.has(String(args.mode).toLowerCase()))
-      return `Invalid mode: ${args.mode} (expected ${[...GOAL_MODES].join(" or ")}).`
+      return goalToolFailure("invalid_mode", `Invalid mode: ${args.mode} (expected ${[...GOAL_MODES].join(" or ")}).`)
     const options = normalizeOptions({
       ...defaultGoalOptions,
       ...(Number.isFinite(args.maxTurns) ? { maxTurns: args.maxTurns } : {}),
@@ -3379,17 +3381,22 @@ function buildAgentToolHandlers({
     lastGoalResults.delete(sessionID)
     registerSessionGoal(goal)
     focusGoal(sessionID, goal)
+    const heldLabel = await holdRestrictedActivation(sessionID, goal)
     await persist(sessionID)
-    announceLifecycle(sessionID, replacedGoal ? "Goal replaced and active." : "Goal active.", {
+    announceLifecycle(sessionID, heldLabel ? `Goal recorded but held while ${heldLabel} is active.` : replacedGoal ? "Goal replaced and active." : "Goal active.", {
       goal,
       transition: replacedGoal ? "replaced-active" : "active",
-      expectedState: "active",
+      expectedState: heldLabel ? "paused" : "active",
     })
     // Escape in the tool result only: goal.condition is stored raw so callers
     // that build XML (buildGoalBlock, buildContinueMessage) can apply escaping
     // themselves. Escaping here prevents XML metacharacters in user-supplied
     // objectives from breaking tool-result boundaries in XML-serialized formats.
-    return `New active goal: ${escapeGoalText(goal.condition)}`
+    return goalToolSuccess(`New ${heldLabel ? "held" : "active"} goal: ${escapeGoalText(goal.condition)}`)
+  }
+
+  async function setGoal(sessionID, args = {}) {
+    return (await setGoalResult(sessionID, args)).message
   }
 
   async function updateGoal(sessionID, args = {}) {
@@ -3423,6 +3430,10 @@ function buildAgentToolHandlers({
         return `Invalid objective: must be ${MAX_GOAL_OBJECTIVE_LENGTH} characters or fewer.`
       }
       goal.condition = args.objective.trim()
+      // An objective edit invalidates work and audit verdicts in flight without
+      // resetting the user's budget or changing the registry identity.
+      goal.runId = randomUUID()
+      goal.continuationClaim = null
       // Deliberately NOT clearing goal.stopped or goal.stopReason: updating the
       // objective does not un-stop a goal. Use status='resumed' to explicitly
       // restart a stopped goal; silently un-stopping would resurrect audit-rejected
@@ -3474,7 +3485,7 @@ function buildAgentToolHandlers({
         if (completionAuditor) {
           let verdict
           try {
-            verdict = await completionAuditor({ goal, sessionID, latestText: evidence })
+            verdict = await completionAuditor({ goal: structuredClone(goal), sessionID, latestText: evidence })
           } catch (error) {
             verdict = { approved: false, reason: "auditor error" }
           }
@@ -3677,12 +3688,13 @@ function buildAgentToolHandlers({
         goal.stopReason = ""
         goal.blockedReason = ""
         goal.lastStatus = "Goal resumed with a fresh local budget."
+        const heldLabel = await holdRestrictedActivation(sessionID, goal)
         pushHistory(goal, "resumed", "Resumed via agent tool with a fresh local budget window.")
-        messages.push("Goal resumed with fresh limits.")
+        messages.push(heldLabel ? `Goal held while ${heldLabel} is active; switch to an executing agent before resuming.` : "Goal resumed with fresh limits.")
         lifecycleNotice = {
-          text: "Goal resumed with fresh limits.",
+          text: heldLabel ? `Goal held while ${heldLabel} is active.` : "Goal resumed with fresh limits.",
           transition: "resumed",
-          expectedState: "active",
+          expectedState: heldLabel ? "paused" : "active",
         }
       }
     }
@@ -3739,7 +3751,7 @@ function buildAgentToolHandlers({
       : "Goal cleared."
   }
 
-  return { getGoal, getGoalHistory, setGoal, updateGoal, clearGoal, agentLockMessage }
+  return { getGoal, getGoalHistory, setGoal, setGoalResult, updateGoal, clearGoal, agentLockMessage }
 }
 
 function agentToolSessionID(ctx) {
@@ -3760,6 +3772,17 @@ function sessionOwnedElsewhereMessage(
   const retryTarget = commandRegistered
     ? `\`/${commandName} status\``
     : "the `goal_status` tool"
+  if (reason === "path" || reason === "hardlink") {
+    const cause = reason === "hardlink"
+      ? "the filesystem cannot publish the required hard-link guard"
+      : "the lease paths have an unsafe layout or the filesystem cannot preserve a safe future guard timestamp"
+    return (
+      `Goal controls are unavailable because ${cause}. ` +
+      "Ordinary chat remains available; goal state will not be loaded or changed while passive. " +
+      "Close OpenCode processes using this session before repairing the lease paths or moving persistence to a filesystem that supports regular-file hard links and future timestamps, " +
+      `then retry ${retryTarget}.`
+    )
+  }
   if (reason === "legacy_lock") {
     return (
       "Goal controls are unavailable because this session has an older or incomplete persistence lease. " +
@@ -3786,7 +3809,7 @@ function inactiveGoalToolResult(
   }
   if (loadResult?.kind === "passive") {
     return goalToolFailure(
-      SESSION_OWNED_ELSEWHERE,
+      loadResult.code,
       sessionOwnedElsewhereMessage(commandName, commandRegistered, loadResult.reason),
     )
   }
@@ -3851,7 +3874,7 @@ function buildAgentTools(
       }
       const locked = handlers.agentLockMessage?.(sessionID, "replace")
       if (locked) return goalToolFailure("agent_authority", locked)
-      return goalToolSuccess(await handlers.setGoal(sessionID, args))
+      return handlers.setGoalResult(sessionID, args)
     },
     update: async (sessionID, args) => {
       const before = currentGoal(sessionID)
@@ -4307,6 +4330,7 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
     if (!sessionID) return ""
     const cached = currentRuntime().sessionExecutionContexts.get(sessionID)?.agent
     if (typeof cached === "string" && cached.trim()) return cached.trim()
+    if (typeof client?.session?.get !== "function") return ""
     try {
       const session = await sessionApi.get(sessionID)
       const agent = typeof session?.agent === "string" ? session.agent.trim() : ""
@@ -4392,7 +4416,7 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
 
   const passiveLoadResult = (entry) => ({
     kind: "passive",
-    code: SESSION_OWNED_ELSEWHERE,
+    code: entry.code,
     reason: entry.reason,
     owner: entry.owner,
     retryAt: entry.retryAt,
@@ -4405,7 +4429,9 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
       preserveExecutionContext: true,
     })
     const entry = {
-      code: SESSION_OWNED_ELSEWHERE,
+      code: isPersistenceLeaseUnavailableError(error)
+        ? PERSISTENCE_UNAVAILABLE
+        : SESSION_OWNED_ELSEWHERE,
       reason: error.reason,
       owner: error.owner,
       firstObservedAt: previous?.firstObservedAt || Date.now(),
@@ -4417,7 +4443,9 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
       const owner = entry.owner?.pid && entry.owner?.hostname
         ? `pid ${entry.owner.pid} on ${entry.owner.hostname}`
         : "another process"
-      const warning = entry.reason === "legacy_lock"
+      const warning = entry.code === PERSISTENCE_UNAVAILABLE
+        ? sessionOwnedElsewhereMessage(commandName, registerCommand, entry.reason)
+        : entry.reason === "legacy_lock"
         ? "Goal controls are passive for this session because its persistence lease is from an older release or is incomplete. Ordinary chat remains available. Close every OpenCode process using this session and upgrade them; if the report persists, remove only the affected session shard's adjacent lease artifacts (`.lock` and `.lock.claims-v2`) or fork the session before retrying goal controls."
         : `Goal controls are passive for this session because ${owner} owns its persistence lease. Ordinary chat remains available; close the owner or fork the session before retrying goal controls.`
       // Host logging is advisory. A broken or backpressured logger must not
@@ -4476,7 +4504,7 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
           staleClaimMs: persistenceOptions.leaseStaleAfterMs,
         })
       } catch (error) {
-        if (!isPersistenceLeaseContendedError(error)) throw error
+        if (!isPersistenceLeaseContendedError(error) && !isPersistenceLeaseUnavailableError(error)) throw error
         return enterPassiveSession(sessionID, error)
       }
       const releaseDisposedSession = async () => {
@@ -4538,6 +4566,7 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
       } catch (error) {
         runtime.sessionPersistence.delete(sessionID)
         await lease.release().catch(() => false)
+        if (isPersistenceLeaseUnavailableError(error)) return enterPassiveSession(sessionID, error)
         throw error
       }
     })()
@@ -4602,6 +4631,7 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
   const childSessionAuditor = pluginOptions.completionAudit
     ? createChildSessionAuditor(client, {
         ...(pluginOptions.auditorOptions || {}),
+        sdkShape: pluginOptions.sdkShape === "flat" ? "flat" : "legacy",
         agent: pluginOptions.verifierAgentName || "goal-verify",
       })
     : null
@@ -4637,6 +4667,12 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
     announceLifecycle,
     commandName,
     agentGoalAuthority,
+    holdRestrictedActivation: async (sessionID, goal) => {
+      const agent = await restrictedAgentFor(sessionID)
+      return agent && currentGoal(sessionID) === goal && !goal.stopped
+        ? holdGoalForRestrictedAgent(goal, agent)
+        : ""
+    },
   })
 
   const abortAcceptedContinuation = async (sessionID) => {
@@ -5404,6 +5440,7 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
         }
 
         goal.condition = newObjective
+        goal.runId = randomUUID()
         // Editing the objective revises the goal in place: keep the turn,
         // token, and time budget plus history, but clear soft-stop state so the
         // revised goal can continue. A goal that hit a hard limit will re-pause
@@ -6189,7 +6226,7 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
             if (completionAuditor) {
               let verdict
               try {
-                verdict = await completionAuditor({ goal: activeGoalAfterMessages, sessionID, latestText })
+                verdict = await completionAuditor({ goal: structuredClone(activeGoalAfterMessages), sessionID, latestText })
               } catch (error) {
                 await logPluginError(client, "Completion auditor threw", error)
                 verdict = { approved: false, reason: "auditor error" }
@@ -6907,6 +6944,26 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
       if (!goal || goal.stopped) return
       output.enabled = false
     },
+  }
+
+  // Every work-starting command shares the creation guard, including add,
+  // sequence, edit, focus and resume. Record the activation for the routed
+  // chat hook, which supplies the agent on a fresh session's first command.
+  const handleGoalCommand = hooks["command.execute.before"]
+  hooks["command.execute.before"] = async (input, output) => {
+    await handleGoalCommand(input, output)
+    const turn = runtime.commandOutputs.get(output)
+    const goal = currentGoal(input?.sessionID)
+    if (turn?.policy !== "work" || !goal || goal.stopped) return
+    turn.startedGoal = { goalId: goal.goalId, runId: goal.runId }
+    const agent = await restrictedAgentFor(input.sessionID)
+    if (!agent || activeGoal(input.sessionID, turn.startedGoal.goalId, turn.startedGoal.runId) !== goal) return
+    const heldLabel = holdGoalForRestrictedAgent(goal, agent)
+    await persist(input.sessionID)
+    replaceCommandOutputText(output, buildGoalCommandNotice(goal, { heldLabel, commandName }))
+    announceLifecycle(input.sessionID, `Goal recorded but held while ${heldLabel} is active.`, {
+      goal, transition: "paused", expectedState: "paused",
+    })
   }
 
   // register_command toggle: when disabled, the plugin does not own
