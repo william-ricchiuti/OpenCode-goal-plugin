@@ -5,6 +5,7 @@ import { z } from "zod"
 import goalPlugin, { GoalPlugin, testInternals } from "../src/goal-plugin.js"
 import { applyNativeGoalConfig } from "../src/native-agent-config.js"
 import {
+  CODE_MODE_GOAL_TOOLS_NOTE,
   GOAL_COMMAND_DESCRIPTION,
   createHostState,
   createV2Client,
@@ -552,6 +553,36 @@ test("failed required agent switches never submit a prompt", async () => {
   assert.equal(calls.length, 0)
 })
 
+test("V2 verifier ownership tolerates host-added deny rules but nothing that widens access", async () => {
+  const { ctx, calls } = fakeClientHost()
+  const owned = translateV1Agent("goal-verify", applyNativeGoalConfig({}).agent["goal-verify"])
+  let actual
+  ctx.agent = { get: async () => actual }
+  const client = createV2Client(ctx, createHostState(), { completionAudit: true }).session
+  const input = { sessionID: "child", agent: "goal-verify", parts: [{ type: "text", text: "audit" }] }
+  const hostDeny = { action: "browser", resource: "*", effect: "deny" }
+  const [first, ...rest] = owned.permissions
+
+  // OpenCode 2.0.26 appends a `browser` deny to every agent.
+  for (const permissions of [[...owned.permissions, hostDeny], [first, hostDeny, ...rest]]) {
+    actual = { ...owned, permissions }
+    assert.equal((await client.prompt(input)).error, undefined, JSON.stringify(permissions.at(-1)))
+  }
+  const accepted = calls.filter(call => call.name === "prompt").length
+  assert.equal(accepted, 2)
+
+  for (const permissions of [
+    [...owned.permissions, { action: "browser", resource: "*", effect: "allow" }],
+    [...owned.permissions, { action: "edit", resource: "*", effect: "ask" }],
+    owned.permissions.slice(1),
+    [...rest, first],
+  ]) {
+    actual = { ...owned, permissions }
+    assert.match((await client.prompt(input)).error.message, /ownership or permissions/)
+  }
+  assert.equal(calls.filter(call => call.name === "prompt").length, accepted)
+})
+
 test("V2 verifier ownership is checked before each prompt, including permission changes", async () => {
   const { ctx, calls } = fakeClientHost()
   const native = applyNativeGoalConfig({}).agent["goal-verify"]
@@ -614,6 +645,55 @@ test("same-location setup retires the previous instance instead of stealing a li
   assert.equal(disposals, 1, "a later host cleanup is idempotent")
   await second()
   assert.equal(disposals, 2)
+})
+
+test("a setup that fails partway disposes everything it already started", async () => {
+  let disposals = 0
+  const factory = async () => ({ config: async () => {}, dispose: async () => { disposals++ }, "command.execute.before": async () => {} })
+  const { ctx, registrations } = createFakeCtx({ pluginOptions: { registerAgents: false } })
+  ctx.session.hook = async () => ({ dispose: async () => { registrations.push("session:prompt") } })
+  ctx.command.transform = async () => { throw new Error("host rejected command") }
+  await assert.rejects(createV2Setup(factory)(ctx), /host rejected command/)
+  assert.equal(disposals, 1, "the core (and its persistence lease) is released")
+  assert.ok(registrations.includes("session:prompt"), "hook registrations are released")
+
+  // The failed attempt must not block the next boot of the same location.
+  const retry = createFakeCtx({ pluginOptions: { registerAgents: false } }).ctx
+  const cleanup = await createV2Setup(factory)(retry)
+  assert.equal(disposals, 1)
+  await cleanup()
+  assert.equal(disposals, 2)
+})
+
+test("on Windows, either separator spelling names the same location", () => {
+  const original = Object.getOwnPropertyDescriptor(process, "platform")
+  Object.defineProperty(process, "platform", { ...original, value: "win32" })
+  try {
+    const event = { type: "session.execution.succeeded", data: { sessionID: "s1" }, location: { directory: "C:/Proj/App/" } }
+    assert.equal(eventBelongsToLocation(event, "c:\\proj\\app"), true)
+  } finally {
+    Object.defineProperty(process, "platform", original)
+  }
+})
+
+test("Code Mode requests are told goal tools live inside execute (#85)", async () => {
+  const systemFor = async (pluginOptions, tools) => {
+    const { ctx, registered } = createFakeCtx({ pluginOptions: { persistState: false, ...pluginOptions } })
+    const cleanup = await createV2Setup(GoalPlugin)(ctx)
+    try {
+      const event = { sessionID: "s1", system: [{ type: "text", text: "host prompt" }], tools }
+      for (const hook of registered.sessionHooks.context) await hook(event)
+      return event.system.map((part) => part.text)
+    } finally {
+      await cleanup()
+    }
+  }
+  const codeMode = await systemFor({}, { read: {}, execute: {} })
+  assert.ok(codeMode.includes(CODE_MODE_GOAL_TOOLS_NOTE))
+  assert.equal(codeMode[0], "host prompt", "host system parts are preserved")
+  assert.ok(!(await systemFor({}, { read: {}, execute: {}, goal_status: {} })).includes(CODE_MODE_GOAL_TOOLS_NOTE), "direct tools need no note")
+  assert.ok(!(await systemFor({}, { read: {} })).includes(CODE_MODE_GOAL_TOOLS_NOTE), "no Code Mode, no note")
+  assert.ok(!(await systemFor({ registerTools: false }, { execute: {} })).includes(CODE_MODE_GOAL_TOOLS_NOTE), "no registered tools, no note")
 })
 
 test("setup registers every V2 surface the goal workflow needs", async () => {

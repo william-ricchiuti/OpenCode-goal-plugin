@@ -100,7 +100,9 @@ function normalizeDirectory(value) {
   let end = directory.length
   while (end > 0 && (directory[end - 1] === "/" || directory[end - 1] === "\\")) end--
   const trimmed = directory.slice(0, end)
-  return process.platform === "win32" ? trimmed.toLowerCase() : trimmed
+  // Windows accepts either separator, so one location can arrive spelled both
+  // ways. Unify them so reloads retire the previous same-location instance.
+  return process.platform === "win32" ? trimmed.replaceAll("/", "\\").toLowerCase() : trimmed
 }
 
 function sessionIDOf(input) {
@@ -416,13 +418,29 @@ export function toV1Event(event, host = createHostState()) {
  * V2 session client
  * ------------------------------------------------------------------ */
 
+// The host may add its own rules to every agent (OpenCode 2.0.26 appends a
+// `browser` deny). Accept the owned rules in order with extra rules mixed in
+// only when every extra rule is a deny: a deny can never widen access under
+// either first- or last-match evaluation, while any extra allow or ask can.
+function permissionsOnlyNarrow(actual, expected) {
+  if (!Array.isArray(actual) || !Array.isArray(expected)) return false
+  const same = (a, b) =>
+    isPlainObject(a) && a.action === b.action && a.resource === b.resource && a.effect === b.effect
+  let next = 0
+  for (const rule of actual) {
+    if (next < expected.length && same(rule, expected[next])) next += 1
+    else if (rule?.effect !== "deny") return false
+  }
+  return next === expected.length
+}
+
 async function assertVerifierOwnership(ctx, name) {
   if (typeof ctx.agent?.get !== "function") throw new Error("verifier agent lookup unavailable")
   const actual = unwrap(await ctx.agent.get({ agentID: name }))
   const config = applyNativeGoalConfig({}, { verifierAgentName: name, goalAgentName: name === "goal" ? "goal-work" : "goal" })
   const expected = translateV1Agent(name, config.agent[name])
   if (!actual || actual.system !== expected.system ||
-      JSON.stringify(actual.permissions) !== JSON.stringify(expected.permissions)) {
+      !permissionsOnlyNarrow(actual.permissions, expected.permissions)) {
     throw new Error(`completionAudit cannot safely use agent ${JSON.stringify(name)}; verifier ownership or permissions were not confirmed`)
   }
 }
@@ -656,16 +674,58 @@ export function normalizeCommandName(value) {
  * @param {(context: {client: unknown, directory?: string}, options: object) => Promise<object>} goalPluginFactory
  */
 export function createV2Setup(goalPluginFactory) {
+  // Everything setup starts is tracked here so a setup that fails partway can
+  // still be torn down. Without that, a rejected setup leaked its event
+  // subscription, timers, hook registrations and persistence lease on every
+  // host location boot (issue #81).
+  const disposeInstance = (instance) => instance.disposePromise ||= (async () => {
+    const { host, timers, controller, registrations } = instance
+    host.disposed = true
+    for (const timer of timers) clearTimeout(timer)
+    timers.clear()
+    controller.abort()
+    for (const registration of [...registrations].reverse()) {
+      try {
+        await registration?.dispose?.()
+      } catch {
+        // Disposal is best-effort; registrations are also disposed on unload.
+      }
+    }
+    try {
+      await instance.hooks?.dispose?.()
+    } catch (error) {
+      logError("OpenCode 2 dispose hook failed", error?.stack || error?.message || error)
+    }
+  })()
+
   const setupInstance = async function setup(ctx) {
-    const host = createHostState()
+    const instance = {
+      host: createHostState(),
+      registrations: [],
+      timers: new Set(),
+      controller: new AbortController(),
+      hooks: null,
+      disposePromise: null,
+    }
+    try {
+      await wireInstance(ctx, instance)
+    } catch (error) {
+      await disposeInstance(instance)
+      throw error
+    }
+    return () => disposeInstance(instance)
+  }
+
+  async function wireInstance(ctx, instance) {
+    const { host, registrations, timers, controller } = instance
     const directory = ctx?.location?.directory || process.cwd()
     // V2's session API only speaks the flat argument shape; the compatibility
     // adapter probes the legacy generated-client shape otherwise.
     const options = { ...(isPlainObject(ctx?.options) ? ctx.options : {}), sdkShape: "flat" }
     const client = createV2Client(ctx, host, options)
     const hooks = await goalPluginFactory({ client, directory }, options)
+    instance.hooks = hooks
 
-    const registrations = []
     const track = async (registration) => {
       registrations.push(registration)
       return registration
@@ -759,16 +819,26 @@ export function createV2Setup(goalPluginFactory) {
 
     // V1 `experimental.chat.system.transform`: injects the goal block into the
     // system prompt of every model request.
+    const exposesGoalTools =
+      isPlainObject(hooks.tool) && typeof hooks.tool.goal_status?.execute === "function"
     await track(
       await ctx.session.hook("context", async (event) => {
-        if (typeof hooks["experimental.chat.system.transform"] !== "function") return
+        const transform = typeof hooks["experimental.chat.system.transform"] === "function"
+        const note = exposesGoalTools && toolsAreCodeModeOnly(event.tools)
+        if (!transform && !note) return
         const output = { system: Array.isArray(event.system) ? [...event.system] : [] }
-        try {
-          await hooks["experimental.chat.system.transform"]({ sessionID: event.sessionID }, output)
-        } catch (error) {
-          hookError("experimental.chat.system.transform", error)
-          return
+        if (transform) {
+          try {
+            await hooks["experimental.chat.system.transform"]({ sessionID: event.sessionID }, output)
+          } catch (error) {
+            hookError("experimental.chat.system.transform", error)
+            return
+          }
         }
+        // Code Mode hosts offer plugin tools only inside `execute`. The goal
+        // prompts name tools bare, so some models call them directly and
+        // report them unavailable (issue #85). Say where they live.
+        if (note) output.system.push(CODE_MODE_GOAL_TOOLS_NOTE)
         if (Array.isArray(output.system)) event.system = output.system.map(toSystemPart)
       }),
     )
@@ -942,7 +1012,6 @@ export function createV2Setup(goalPluginFactory) {
 
     /* ---------------- event stream ---------------- */
 
-    const controller = new AbortController()
     const consumeEvents = async () => {
       try {
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
@@ -976,7 +1045,6 @@ export function createV2Setup(goalPluginFactory) {
 
     /* ---------------- deferred host-activation work ---------------- */
 
-    const timers = new Set()
     const later = (fn, delay) => {
       const timer = setTimeout(() => {
         timers.delete(timer)
@@ -1064,25 +1132,6 @@ export function createV2Setup(goalPluginFactory) {
 
     /* ---------------- cleanup ---------------- */
 
-    let disposePromise
-    return () => disposePromise ||= (async () => {
-      host.disposed = true
-      for (const timer of timers) clearTimeout(timer)
-      timers.clear()
-      controller.abort()
-      for (const registration of [...registrations].reverse()) {
-        try {
-          await registration.dispose()
-        } catch {
-          // Disposal is best-effort; registrations are also disposed on unload.
-        }
-      }
-      try {
-        await hooks.dispose()
-      } catch (error) {
-        hookError("dispose", error)
-      }
-    })()
   }
   return async function setup(ctx) {
     // Host reloads can omit cleanup. Retire the old same-location instance
@@ -1112,6 +1161,21 @@ export function createV2Setup(goalPluginFactory) {
   }
 }
 
+export const CODE_MODE_GOAL_TOOLS_NOTE =
+  "Goal tools (goal_status, goal_set, goal_pause, goal_resume, goal_block, goal_complete and the rest) " +
+  "are not direct tools on this host. Call them inside the `execute` tool, for example " +
+  "`return await tools.goal_status()`, using the signatures in the Code Mode catalog."
+
+/** True when the request offers `execute` (Code Mode) but no goal tool directly. */
+function toolsAreCodeModeOnly(tools) {
+  const names = Array.isArray(tools)
+    ? tools.map((tool) => (typeof tool === "string" ? tool : tool?.name))
+    : isPlainObject(tools)
+      ? Object.keys(tools)
+      : []
+  return names.includes("execute") && !names.includes("goal_status")
+}
+
 function toSystemPart(entry) {
   if (typeof entry === "string") return { type: "text", text: entry }
   if (!isPlainObject(entry)) return { type: "text", text: "" }
@@ -1121,6 +1185,7 @@ function toSystemPart(entry) {
 }
 
 export const v2BridgeInternals = Object.freeze({
+  toolsAreCodeModeOnly,
   MARKER_KEY,
   GOAL_COMMAND_DESCRIPTION,
   createHostState,
