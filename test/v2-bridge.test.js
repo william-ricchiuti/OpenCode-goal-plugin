@@ -5,6 +5,7 @@ import { z } from "zod"
 import goalPlugin, { GoalPlugin, testInternals } from "../src/goal-plugin.js"
 import { applyNativeGoalConfig } from "../src/native-agent-config.js"
 import {
+  CODE_MODE_GOAL_TOOLS_NOTE,
   GOAL_COMMAND_DESCRIPTION,
   createHostState,
   createV2Client,
@@ -614,6 +615,26 @@ test("same-location setup retires the previous instance instead of stealing a li
   assert.equal(disposals, 1, "a later host cleanup is idempotent")
   await second()
   assert.equal(disposals, 2)
+})
+
+test("Code Mode requests are told goal tools live inside execute (#85)", async () => {
+  const systemFor = async (pluginOptions, tools) => {
+    const { ctx, registered } = createFakeCtx({ pluginOptions: { persistState: false, ...pluginOptions } })
+    const cleanup = await createV2Setup(GoalPlugin)(ctx)
+    try {
+      const event = { sessionID: "s1", system: [{ type: "text", text: "host prompt" }], tools }
+      for (const hook of registered.sessionHooks.context) await hook(event)
+      return event.system.map((part) => part.text)
+    } finally {
+      await cleanup()
+    }
+  }
+  const codeMode = await systemFor({}, { read: {}, execute: {} })
+  assert.ok(codeMode.includes(CODE_MODE_GOAL_TOOLS_NOTE))
+  assert.equal(codeMode[0], "host prompt", "host system parts are preserved")
+  assert.ok(!(await systemFor({}, { read: {}, execute: {}, goal_status: {} })).includes(CODE_MODE_GOAL_TOOLS_NOTE), "direct tools need no note")
+  assert.ok(!(await systemFor({}, { read: {} })).includes(CODE_MODE_GOAL_TOOLS_NOTE), "no Code Mode, no note")
+  assert.ok(!(await systemFor({ registerTools: false }, { execute: {} })).includes(CODE_MODE_GOAL_TOOLS_NOTE), "no registered tools, no note")
 })
 
 test("setup registers every V2 surface the goal workflow needs", async () => {

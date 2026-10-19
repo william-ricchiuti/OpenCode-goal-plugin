@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- On OpenCode 2, tell the model where the goal tools live. OpenCode 2's Code Mode offers plugin tools only inside the `execute` tool (as `tools.goal_status()` and so on), while the plugin's prompts name the tools bare, so some models called `goal_status` directly and reported the goal tools unavailable (#85). When a request offers `execute` and no direct goal tool, the system prompt now gets a one-line note pointing the model at `execute` and the Code Mode catalog. Verified on live OpenCode 2.0.16 and 2.0.31 hosts, with the package loaded from global config as in the report: the tools were always registered in the catalog.
+
 ## 0.11.0 — 2026-09-30
 
 - Normalize directory separators with a linear scan, preventing adversarial location strings from causing regular-expression backtracking.
