@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- On OpenCode 2, tell the model where the goal tools live. OpenCode 2's Code Mode offers plugin tools only inside the `execute` tool (as `tools.goal_status()` and so on), while the plugin's prompts name the tools bare, so some models called `goal_status` directly and reported the goal tools unavailable (#85). When a request offers `execute` and no direct goal tool, the system prompt now gets a one-line note pointing the model at `execute` and the Code Mode catalog. Verified on live OpenCode 2.0.16 and 2.0.31 hosts, with the package loaded from global config as in the report: the tools were always registered in the catalog.
 - Never send a liveness signal to the host's own process when checking a persistence lease owner. On Windows, runtimes that emulate POSIX signals may treat `kill(pid, 0)` as a real termination, which matches reports of the OpenCode service dying silently with the plugin installed (#81).
 - On OpenCode 2, tear down everything a partially failed `setup` already started (event subscription, timers, hook registrations, and the goal core with its persistence lease) instead of leaking it on every location boot.
 - On Windows, treat `/` and `\` as the same separator when matching a location, so a reload with a differently spelled path retires the previous instance instead of running beside it.

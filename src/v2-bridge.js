@@ -819,16 +819,26 @@ export function createV2Setup(goalPluginFactory) {
 
     // V1 `experimental.chat.system.transform`: injects the goal block into the
     // system prompt of every model request.
+    const exposesGoalTools =
+      isPlainObject(hooks.tool) && typeof hooks.tool.goal_status?.execute === "function"
     await track(
       await ctx.session.hook("context", async (event) => {
-        if (typeof hooks["experimental.chat.system.transform"] !== "function") return
+        const transform = typeof hooks["experimental.chat.system.transform"] === "function"
+        const note = exposesGoalTools && toolsAreCodeModeOnly(event.tools)
+        if (!transform && !note) return
         const output = { system: Array.isArray(event.system) ? [...event.system] : [] }
-        try {
-          await hooks["experimental.chat.system.transform"]({ sessionID: event.sessionID }, output)
-        } catch (error) {
-          hookError("experimental.chat.system.transform", error)
-          return
+        if (transform) {
+          try {
+            await hooks["experimental.chat.system.transform"]({ sessionID: event.sessionID }, output)
+          } catch (error) {
+            hookError("experimental.chat.system.transform", error)
+            return
+          }
         }
+        // Code Mode hosts offer plugin tools only inside `execute`. The goal
+        // prompts name tools bare, so some models call them directly and
+        // report them unavailable (issue #85). Say where they live.
+        if (note) output.system.push(CODE_MODE_GOAL_TOOLS_NOTE)
         if (Array.isArray(output.system)) event.system = output.system.map(toSystemPart)
       }),
     )
@@ -1151,6 +1161,21 @@ export function createV2Setup(goalPluginFactory) {
   }
 }
 
+export const CODE_MODE_GOAL_TOOLS_NOTE =
+  "Goal tools (goal_status, goal_set, goal_pause, goal_resume, goal_block, goal_complete and the rest) " +
+  "are not direct tools on this host. Call them inside the `execute` tool, for example " +
+  "`return await tools.goal_status()`, using the signatures in the Code Mode catalog."
+
+/** True when the request offers `execute` (Code Mode) but no goal tool directly. */
+function toolsAreCodeModeOnly(tools) {
+  const names = Array.isArray(tools)
+    ? tools.map((tool) => (typeof tool === "string" ? tool : tool?.name))
+    : isPlainObject(tools)
+      ? Object.keys(tools)
+      : []
+  return names.includes("execute") && !names.includes("goal_status")
+}
+
 function toSystemPart(entry) {
   if (typeof entry === "string") return { type: "text", text: entry }
   if (!isPlainObject(entry)) return { type: "text", text: "" }
@@ -1160,6 +1185,7 @@ function toSystemPart(entry) {
 }
 
 export const v2BridgeInternals = Object.freeze({
+  toolsAreCodeModeOnly,
   MARKER_KEY,
   GOAL_COMMAND_DESCRIPTION,
   createHostState,
