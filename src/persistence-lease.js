@@ -250,11 +250,39 @@ function tokenFromClaimName(name) {
     : null
 }
 
+// Windows rejects a rename over a file another process holds open (antivirus,
+// indexers, a concurrent reader) with EPERM, EACCES or EBUSY until that handle
+// closes, usually within milliseconds. Retry briefly there instead of failing
+// the write. Elsewhere those codes are real permission errors and fail at once.
+const TRANSIENT_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"])
+const TRANSIENT_RENAME_DELAYS_MS = Object.freeze([10, 20, 40, 80, 160])
+
+export async function renameWithTransientRetry(
+  from,
+  to,
+  { platform = process.platform, rename = fs.rename, delaysMs = TRANSIENT_RENAME_DELAYS_MS } = {},
+) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await rename(from, to)
+    } catch (error) {
+      if (
+        platform !== "win32" ||
+        !TRANSIENT_RENAME_CODES.has(error?.code) ||
+        attempt >= delaysMs.length
+      ) {
+        throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, delaysMs[attempt]))
+    }
+  }
+}
+
 async function writeAtomicJSON(path, value) {
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`
   try {
     await fs.writeFile(temporaryPath, JSON.stringify(value), { mode: 0o600, flag: "wx" })
-    await fs.rename(temporaryPath, path)
+    await renameWithTransientRetry(temporaryPath, path)
   } finally {
     await fs.unlink(temporaryPath).catch((error) => {
       if (error?.code !== "ENOENT") throw error

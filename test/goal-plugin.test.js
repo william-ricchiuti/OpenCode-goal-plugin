@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises"
+import { promises as fsPromises } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import test from "node:test"
@@ -10517,5 +10518,45 @@ test("a 2038-capped filesystem supports public goal creation and durable recover
     await hooks?.dispose()
     t.mock.restoreAll()
     await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("goal state saves ride out a transient Windows rename lock", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-plugin-rename-"))
+  const stateFilePath = join(dir, "state.json")
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")
+  const realRename = fsPromises.rename
+  const logs = []
+  let injected = 0
+  try {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" })
+    fsPromises.rename = async (from, to) => {
+      // Fail the first two session snapshot renames, as a Windows lock would.
+      if (injected < 2 && String(to).includes(".sessions") && String(to).endsWith("state.json")) {
+        injected += 1
+        throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" })
+      }
+      return realRename(from, to)
+    }
+    const client = {
+      app: { log: async (input) => logs.push(input) },
+      session: {
+        messages: async () => ({ data: [message("still working")] }),
+        promptAsync: async () => ({}),
+      },
+    }
+    const hooks = await GoalPlugin({ client }, { persistState: true, stateFilePath, minDelayMs: 1 })
+    await hooks["command.execute.before"](
+      { command: "goal", sessionID: "session-rename", arguments: "ship it" },
+      { parts: [] },
+    )
+    assert.ok(injected > 0, "the state snapshot rename was exercised")
+    const persisted = JSON.parse(await readFile(sessionStatePath(stateFilePath, "session-rename"), "utf8"))
+    assert.equal(persisted.goals.some((goal) => goal.condition === "ship it"), true)
+    assert.equal(JSON.stringify(logs).includes("Failed to persist"), false)
+  } finally {
+    fsPromises.rename = realRename
+    Object.defineProperty(process, "platform", platform)
+    await rm(dir, { recursive: true, force: true })
   }
 })

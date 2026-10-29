@@ -24,6 +24,7 @@ import {
   acquirePersistenceLease,
   isPersistenceLeaseContendedError,
   isPersistenceLeaseUnavailableError,
+  renameWithTransientRetry,
 } from "./persistence-lease.js"
 
 const STATE_FILE_VERSION = 1
@@ -2061,7 +2062,9 @@ async function writeStateSnapshot(stateFilePath, payload) {
   try {
     await fs.mkdir(dirname(stateFilePath), { recursive: true, mode: 0o700 })
     await fs.writeFile(tmpPath, JSON.stringify(payload, null, 2), { encoding: "utf8", mode: 0o600 })
-    await fs.rename(tmpPath, stateFilePath)
+    // A failed snapshot can pause a running goal (the continuation claim fails
+    // closed), so ride out the brief Windows file locks that cause most of them.
+    await renameWithTransientRetry(tmpPath, stateFilePath)
     await fs.chmod(stateFilePath, 0o600)
     return true
   } catch (error) {
