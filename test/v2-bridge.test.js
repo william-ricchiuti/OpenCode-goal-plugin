@@ -373,6 +373,21 @@ test("children and status expose the shapes the active-children gate reads", asy
   assert.deepEqual(await client.children({ sessionID: "unknown" }), [])
 })
 
+test("children reads the paged session.list shape of OpenCode 2.2", async () => {
+  // 2.2.x returns `SessionsResponse` (`{ data, cursor }`) from `session.list`.
+  const { ctx, calls } = fakeClientHost()
+  ctx.session.list = async (input) => {
+    calls.push({ name: "list", input })
+    return { data: [{ id: "child-before-reload", parentID: "parent-1" }], cursor: null }
+  }
+  const client = createV2Client(ctx, createHostState()).session
+
+  assert.deepEqual(await client.children({ sessionID: "parent-1" }), [
+    { id: "child-before-reload", parentID: "parent-1" },
+  ])
+  assert.deepEqual(calls.at(-1), { name: "list", input: { parentID: "parent-1" } })
+})
+
 /* ------------------------------------------------------------------ *
  * V1 config translation
  * ------------------------------------------------------------------ */
@@ -929,6 +944,43 @@ test("a config command with the same name is re-asserted after activation", asyn
   } finally {
     await cleanup()
   }
+})
+
+test("command re-assertion is released on cleanup and never runs after it", async () => {
+  const { ctx, registered, registrations } = createFakeCtx({
+    commands: [{ name: "goal", description: "Set a session-scoped goal and auto-continue until complete." }],
+    pluginOptions: { persistState: false },
+  })
+  let releaseList
+  const listGate = new Promise((resolve) => {
+    releaseList = resolve
+  })
+  const list = ctx.command.list
+  let listCalls = 0
+  ctx.command.list = async () => {
+    listCalls += 1
+    // Hold the second ownership check inside `command.list` so cleanup lands mid-check.
+    if (listCalls > 1) await listGate
+    return list()
+  }
+  const cleanup = await createV2Setup(GoalPlugin)(ctx)
+  ctx.__emit?.({ id: "c1", type: "command.updated", data: {}, location: { directory: "C:\\proj" } })
+  await settle(4)
+  await new Promise((resolve) => setTimeout(resolve, 2600))
+  await settle(4)
+  assert.equal(registered.commands.length, 2, "the first check re-asserted once")
+  assert.ok(listCalls >= 2, "a second check is waiting in command.list")
+
+  await cleanup()
+  releaseList()
+  await settle(8)
+
+  assert.equal(registered.commands.length, 2, "no registration after cleanup")
+  assert.equal(
+    registrations.filter((name) => name === "command.transform").length,
+    2,
+    "every command registration, including the re-assertion, is disposed",
+  )
 })
 
 test("event subscription drives the V1 event hook and survives handler errors", async () => {
