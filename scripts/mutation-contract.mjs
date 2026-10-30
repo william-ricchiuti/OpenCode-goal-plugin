@@ -83,6 +83,13 @@ const mutants = [
     test: "test/v2-bridge.test.js",
   },
   {
+    name: "verifier integrity failures reject under failurePolicy approve",
+    file: "src/goal-plugin.js",
+    from: "      if (response?.error?.code === VERIFIER_INTEGRITY_ERROR_CODE) {",
+    to: "      if (false) {",
+    test: "test/v2-bridge.test.js",
+  },
+  {
     name: "verifier config rejection revokes previous readiness",
     file: "src/goal-plugin.js",
     from: "      if (pluginOptions.completionAudit) verifierRegistrationReady = false",

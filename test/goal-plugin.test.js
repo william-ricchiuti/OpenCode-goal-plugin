@@ -7831,6 +7831,17 @@ test("createChildSessionAuditor requires an explicit policy to approve operation
   assert.equal(providerFailure.approved, false)
   assert.match(providerFailure.reason, /provider unavailable/)
 
+  // A child linked to another parent is an integrity failure, not an outage.
+  const foreignChild = {
+    session: {
+      create: async () => ({ id: "someone-elses-session", parentID: "other-parent" }),
+      prompt: async () => ({ parts: [textPart("[audit:approved]")] }),
+    },
+  }
+  const unlinked = await createChildSessionAuditor(foreignChild, { failurePolicy: "approve" })(context)
+  assert.equal(unlinked.approved, false)
+  assert.match(unlinked.reason, /parent relationship was not preserved/)
+
   assert.throws(
     () => createChildSessionAuditor({}, { failurePolicy: "sometimes" }),
     /failurePolicy must be "reject" or "approve"/,
