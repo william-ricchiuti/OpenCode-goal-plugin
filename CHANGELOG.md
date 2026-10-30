@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- On OpenCode 2.2, find a goal session's existing child sessions again. 2.2 returns `session.list` as a page (`{ data, cursor }`), which the bridge did not unwrap, so `noContinueWhileChildrenActive` only saw children created while the current plugin instance was running and missed any that started before a reload. Earlier 2.0 hosts have no `session.list` in the plugin context and are unchanged.
+- On OpenCode 2, release the `/goal` registration the plugin re-asserts over a shadowing config command when the plugin is unloaded, and skip the re-assertion if the plugin was unloaded while it was checking. Real hosts already scope plugin registrations to the plugin, so this only matters for embedders.
+
 ## 0.11.2 — 2026-10-29
 
 - On Windows, retry the atomic rename behind goal state and persistence lease saves when it fails with `EPERM`, `EACCES` or `EBUSY`, waiting 10 ms and doubling up to 160 ms (about 0.3 s at most). Windows refuses to rename over a file another process has open, such as antivirus, an indexer or anything reading `state.json`, and one such failure on the save before an auto-continue paused the goal with `continuation claim persistence failed` until a manual `/goal resume`. In a soak that made 3% of state renames fail this way, this cut paused goals from 8 to 0. A lock that outlasts the retries still fails closed as before; other platforms are unchanged.
