@@ -103,9 +103,10 @@ function persistenceLeaseHardLinkError() {
 
 function processIsAlive(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null
-  // The host process is alive by definition. Never signal it: runtimes that
-  // emulate POSIX signals on Windows may map signal 0 to a real termination,
-  // which would kill the OpenCode service silently (issue #81).
+  // The host process is alive by definition, so skip the probe. Signal 0 is
+  // only an existence check: Node and OpenCode's embedded Bun both route it
+  // through libuv, which on Windows calls GetExitCodeProcess and never
+  // terminates the target (verified on windows-latest for issue #81).
   if (pid === process.pid) return true
   try {
     process.kill(pid, 0)
@@ -250,10 +251,11 @@ function tokenFromClaimName(name) {
     : null
 }
 
-// Windows rejects a rename over a file another process holds open (antivirus,
-// indexers, a concurrent reader) with EPERM, EACCES or EBUSY until that handle
-// closes, usually within milliseconds. Retry briefly there instead of failing
-// the write. Elsewhere those codes are real permission errors and fail at once.
+// Windows rejects a rename over, or an unlink of, a file another process holds
+// open (antivirus, indexers, a concurrent reader) with EPERM, EACCES or EBUSY
+// until that handle closes, usually within milliseconds. Retry briefly there
+// instead of failing the write or release. Elsewhere those codes are real
+// permission errors and fail at once.
 const TRANSIENT_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"])
 const TRANSIENT_RENAME_DELAYS_MS = Object.freeze([10, 20, 40, 80, 160])
 
@@ -262,9 +264,13 @@ export async function renameWithTransientRetry(
   to,
   { platform = process.platform, rename = fs.rename, delaysMs = TRANSIENT_RENAME_DELAYS_MS } = {},
 ) {
+  return withTransientRetry(() => rename(from, to), { platform, delaysMs })
+}
+
+async function withTransientRetry(operation, { platform, delaysMs }) {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await rename(from, to)
+      return await operation()
     } catch (error) {
       if (
         platform !== "win32" ||
@@ -449,7 +455,10 @@ async function ensureClaimDirectory(claimDirectoryPath) {
 
 async function removeUniqueClaim(claimPath) {
   try {
-    await fs.unlink(claimPath)
+    await withTransientRetry(() => fs.unlink(claimPath), {
+      platform: process.platform,
+      delaysMs: TRANSIENT_RENAME_DELAYS_MS,
+    })
     return true
   } catch (error) {
     if (error?.code === "ENOENT") return false

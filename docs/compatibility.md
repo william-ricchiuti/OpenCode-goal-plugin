@@ -8,7 +8,9 @@ The latest published release is the supported line. Public compatibility covers:
 - the declarations exported by `index.d.ts`
 - the documented `GoalPluginOptions` fields
 - the documented OpenCode hook names
-- the six canonical goal tools and five legacy tool aliases
+- the six canonical goal tools and five legacy tool aliases (OpenCode 2 registers
+  three of the aliases; `get_goal` and `set_goal` duplicate `goal_status` and
+  `goal_set` and are not exposed there)
 - persisted-state recovery from versions documented in the changelog
 - concurrent persistence for distinct OpenCode sessions in one project, with
   single-writer protection retained per session and passive goal behavior for
@@ -86,8 +88,8 @@ remains registered as additional protection for hosts that support it.
 
 ## OpenCode 2
 
-**Status: supported.** Verified against a real OpenCode **2.0.16** host on
-Windows (contributor testing), with independent macOS acceptance for Plan activation, restricted completion auditing and safe reload recovery. The V2 hook surface is pinned by `test/v2-bridge.test.js`.
+**Status: supported.** Verified against real OpenCode **2.0.16**, **2.0.26** and **2.2.2** hosts: 2.0.16 on
+Windows (contributor testing), and the live acceptance script below on macOS for all three, covering Plan activation, restricted completion auditing, foreign-verifier rejection and safe reload recovery. The V2 hook surface is pinned by `test/v2-bridge.test.js`.
 
 `engines.opencode` is `>=1.17.15` with no upper bound: one entrypoint serves
 both lines. OpenCode 1 reads `id` + `server` from the default export;
@@ -116,23 +118,39 @@ event contract, transcript/message normalization, the flat session-client
 inputs, and an end-to-end `/goal set` command turn that creates a goal
 instead of being read as user input. The current suite also rejects failed agent switches, altered verifier permissions and stale registration readiness.
 
-Independent macOS acceptance against 2.0.16 uses a local deterministic provider: fresh Plan add/sequence commands are held; `goal_complete` runs through Code Mode, the child receives the `goal-verify` identity and only read/glob/grep tools, and the parent archives only after its verdict. A foreign verifier rejects completion before any child model request. Location reload releases the previous instance's claim and recovers active work paused. These tests use no paid provider.
+Independent macOS acceptance against 2.0.16 uses a local deterministic provider: fresh Plan add/sequence commands are held; `goal_complete` runs through Code Mode, the child receives the `goal-verify` identity and only read/glob/grep tools (2.2.2 also lists its `skill` tool; the verifier's rules start with a catch-all deny), and the parent archives only after its verdict. A foreign verifier rejects completion before any child model request. Location reload releases the previous instance's claim and recovers active work paused. These tests use no paid provider.
 
-The plugin context on 2.0.16 does not expose session removal, so its audit children remain retained by the host. If a host exposes `session.remove`, the adapter maps it to the core's cleanup contract. Claims about child deletion are limited to that conditional adapter test.
+The plugin context on 2.0.16 does not expose session removal, so its audit children remain retained by the host. If a host exposes `session.remove`, the adapter maps it to the core's cleanup contract; the 2.0.26 and 2.2.2 runs below confirm the deletion on real hosts.
 
 On 2.0.26 the same acceptance script passes in both modes. That host exposes `session.remove`, so the verifier child is deleted after its verdict. It also appends its own `browser` deny rule to every agent; the verifier ownership check accepts host-added deny rules (which can only narrow access) but still rejects any changed, missing, reordered or widening rule.
+
+On 2.2.2 (2026-10-29) the same acceptance script passes in both modes, with the verifier child removed after its verdict.
+
+### Built-in `/goal` on OpenCode 2.2.1 and later
+
+OpenCode [v2.2.1](https://github.com/anomalyco/opencode/releases/tag/v2.2.1) ships its own `/goal` as a built-in plugin, `opencode.goal` ([#59437](https://github.com/anomalyco/opencode/pull/59437)). It is a different design: one goal per session, a reviewer that asks the session's own model whether the objective is met, hidden limits (50 rounds, 3 stalled rounds, a 30-minute wait), `pause`/`resume`/`clear` only, and TUI and Desktop status UI. It is not in OpenCode 1 or in OpenCode 2 before 2.2.1.
+
+Built-in plugins load before user plugins, and the command registry keeps the last registration, so the two interact as follows. Tested on a live 2.2.2 host with a local deterministic provider:
+
+| Setup | Commands listed | `/goal <objective>` |
+| --- | --- | --- |
+| Built-in only | `goal` (built-in) | built-in goal set |
+| Built-in and this plugin, default options | `goal` (this plugin) | this plugin only; the built-in stores no state and never continues |
+| Built-in and this plugin with `commandName: "objective"` | `goal` (built-in) and `objective` (this plugin) | `/goal` drives the built-in, `/objective` drives the plugin; each keeps its own state |
+
+With default options, the built-in's TUI and Desktop goal indicators stay empty, because they read the built-in's own state. Their Pause, Resume and Clear actions send `/goal pause` and so on, which this plugin then handles. If you keep both by renaming the plugin's command, use one or the other in a given session: running both loops in one session was not tested.
 
 ### Hook mapping
 
 The isolated live acceptance command requires a pinned host runtime installed outside your real OpenCode config:
 
 ```sh
-npm install --prefix /tmp/goal-v2-runtime --ignore-scripts --no-audit --no-fund @opencode/cli@2.0.16 @opencode/plugin@2.0.16
+npm install --prefix /tmp/goal-v2-runtime --ignore-scripts --no-audit --no-fund @opencode/cli@2.2.2 @opencode/plugin@2.2.2
 OPENCODE_V2_RUNTIME_DIR=/tmp/goal-v2-runtime npm run smoke:v2-host
 OPENCODE_V2_RUNTIME_DIR=/tmp/goal-v2-runtime GOAL_V2_FOREIGN_VERIFIER=1 npm run smoke:v2-host
 ```
 
-The script uses an isolated HOME/config/cache and a localhost deterministic provider. It tests Plan add/sequence, Code Mode completion with the restricted verifier, and paused recovery after reload; the second mode tests rejection of a foreign verifier. `OPENCODE_V2_BINARY` can select a different binary explicitly. The positive child-retention result reflects the 2.0.16 plugin API limit described below. This optional live acceptance command is separate from the network-free behavior benchmark and does not run automatically in the release gate.
+The script uses an isolated HOME/config/cache and a localhost deterministic provider. It tests Plan add/sequence, Code Mode completion with the restricted verifier, and paused recovery after reload; the second mode tests rejection of a foreign verifier. `OPENCODE_V2_BINARY` can select a different binary explicitly. The positive child-retention result reflects the 2.0.16 plugin API limit described above. This optional live acceptance command is separate from the network-free behavior benchmark and does not run automatically in the release gate.
 
 | OpenCode 1 | OpenCode 2 |
 | --- | --- |
@@ -176,11 +194,13 @@ progress), `session.agent.selected`/`session.model.selected` →
 4. **No `client.app.log`.** V2's plugin context has no structured log API, so
    advisory warnings and errors use the same console fallback V1 already uses
    when `app.log` is unavailable; debug-level diagnostics stay silent.
-5. **Completion-audit children.** `session.create` has no `parentID` field on
-   V2, so the bridge records `parentSessionID` in the child's session metadata
-   and echoes it back to satisfy the auditor's integrity check. V2 exposes no
-   session-delete operation to the plugin context, so audit children are not
-   removed afterwards (V1 deleted them when `client.session.delete` existed).
+5. **Completion-audit children.** The bridge does not pass `parentID` to
+   V2 `session.create`, although 2.0.26 and 2.2.2 accept it, so the host does
+   not link audit children to their parent session. The bridge records `parentSessionID` in the child's session metadata
+   and echoes it back to satisfy the auditor's integrity check. The 2.0.16
+   plugin context has no session-delete operation, so audit children are kept
+   there; 2.0.26 and later expose `session.remove`, and the children are
+   deleted after the verdict (V1 deleted them when `client.session.delete` existed).
    Every built-in audit verifies the live agent system and complete permission rules before switching agents. Failed switches abort submission. The synchronous auditor waits for V2 execution before reading the assistant verdict.
 6. **Agent permission vocabulary.** V1 agent tool maps are translated to
    ordered V2 rules, emitting both spellings for renamed actions
@@ -208,18 +228,18 @@ entry:
 
 ```jsonc
 // OpenCode 1
-{ "plugin": ["opencode-goal-plugin@0.11.2"],
+{ "plugin": ["opencode-goal-plugin@0.11.3"],
   "command": { "goal": { "template": "$ARGUMENTS", "agent": "build" } } }
 
 // OpenCode 2 (the command entry is not needed and should be omitted)
-{ "plugins": ["opencode-goal-plugin@0.11.2"] }
+{ "plugins": ["opencode-goal-plugin@0.11.3"] }
 
 // OpenCode 2 with plugin options: repeat the exact package spec in object
 // form so the project entry — and its options — takes precedence over a
 // same-package entry in the user-level config (verified on 2.0.16; a
 // different spec, such as a local path, does not replace it).
 { "plugins": [
-  { "package": "opencode-goal-plugin@0.11.2", "options": { "sessionTitleStatus": true } }
+  { "package": "opencode-goal-plugin@0.11.3", "options": { "sessionTitleStatus": true } }
 ] }
 ```
 

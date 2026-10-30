@@ -83,6 +83,13 @@ const mutants = [
     test: "test/v2-bridge.test.js",
   },
   {
+    name: "verifier integrity failures reject under failurePolicy approve",
+    file: "src/goal-plugin.js",
+    from: "      if (response?.error?.code === VERIFIER_INTEGRITY_ERROR_CODE) {",
+    to: "      if (false) {",
+    test: "test/v2-bridge.test.js",
+  },
+  {
     name: "verifier config rejection revokes previous readiness",
     file: "src/goal-plugin.js",
     from: "      if (pluginOptions.completionAudit) verifierRegistrationReady = false",
@@ -408,6 +415,13 @@ const mutants = [
     test: "test/persistence-lease.test.js",
   },
   {
+    name: "Windows claim unlinks retry transient handle locks",
+    file: "src/persistence-lease.js",
+    from: "    await withTransientRetry(() => fs.unlink(claimPath), {\n      platform: process.platform,",
+    to: "    await withTransientRetry(() => fs.unlink(claimPath), {\n      platform: \"linux\",",
+    test: "test/persistence-lease.test.js",
+  },
+  {
     name: "bounded owner records tolerate legal short reads",
     file: "src/persistence-lease.js",
     from: "  while (bytesReadTotal < buffer.length) {",
@@ -699,6 +713,13 @@ const mutants = [
     file: "src/goal-plugin.js",
     from: "    hooks.tool = buildAgentTools(\n      bundledToolHelper,\n      agentToolHandlers,\n      ensureSessionLoaded,\n      commandName,\n      () => runtime.disposed,\n      registerCommand,\n    )",
     to: "hooks.tool = {}",
+    test: "test/goal-plugin.test.js",
+  },
+  {
+    name: "replaced goals stay terminal during ledger recovery",
+    file: "src/goal-plugin.js",
+    from: /(const LEDGER_TERMINAL_TYPES = new Set\(\[[^\]]*), "replaced"/,
+    to: "$1",
     test: "test/goal-plugin.test.js",
   },
 ]

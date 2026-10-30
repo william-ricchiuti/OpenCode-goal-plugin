@@ -1,37 +1,41 @@
 # opencode-goal-plugin
 
 [![npm version](https://img.shields.io/npm/v/opencode-goal-plugin)](https://www.npmjs.com/package/opencode-goal-plugin)
-[![npm downloads](https://img.shields.io/npm/dm/opencode-goal-plugin)](https://www.npmjs.com/package/opencode-goal-plugin)
 [![CI](https://github.com/william-ricchiuti/OpenCode-goal-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/william-ricchiuti/OpenCode-goal-plugin/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/william-ricchiuti/OpenCode-goal-plugin/actions/workflows/codeql.yml/badge.svg)](https://github.com/william-ricchiuti/OpenCode-goal-plugin/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A session-scoped `/goal` workflow for [OpenCode](https://opencode.ai/).
+A `/goal` command for [OpenCode](https://opencode.ai/): set an objective, walk away, and the plugin keeps the agent working until it proves the goal is done, reports a blocker, or hits a limit you set.
 
-Set a goal and the plugin keeps it in context, auto-continues the session whenever the assistant goes idle, and stops when the goal is marked complete, a blocker is reported, or a safety limit is reached.
+> [!IMPORTANT]
+> **Maintenance only.** OpenCode ships its own `/goal` as of [v2.2.1](https://github.com/anomalyco/opencode/releases/tag/v2.2.1) (2026-10-29, [#59437](https://github.com/anomalyco/opencode/pull/59437)). On 2.2.1 and later, use the built-in command unless you need what it does not do: evidence-gated completion with an independent read-only verifier, multiple goals and ordered sequences, configurable turn, time, token and cost limits, agent tools, and Plan-mode holds. Bug and security fixes only; no new features. Running both side by side: see [Install](#running-alongside-the-built-in-goal).
 
-Compatibility: this plugin relies on experimental OpenCode hooks. Re-test against the exact OpenCode build and provider/backend stack you plan to use for unattended work.
+**Why it existed.** From May to October 2026 OpenCode had no way to run an objective unattended. This plugin filled that gap for OpenCode 1 and 2, and was used for multi-hour autonomous runs in which no model could declare itself finished without evidence.
 
-## What it provides
+## Engineering highlights
 
-- Session-scoped goals that remain visible across turns and compaction.
-- Guarded auto-continuation with turn, duration, token, no-progress, and no-tool-call limits.
-- Project-local restart recovery backed by persisted state and a bounded lifecycle ledger.
-- Evidence-gated completion with an optional independent, fail-closed verifier.
-- Explicit `active`, `paused`, and `blocked` status plus transition-only lifecycle notices.
-- Canonical agent tools, collision-safe goal/verifier agents, multiple goals, and ordered goal sequences.
+- **Fail-closed persistence.** Atomic state writes, an append-only lifecycle ledger for recovery, and a per-session lease built on immutable claim files. A second process on the same session stays passive instead of writing a diverging copy; unknown or corrupt layouts are quarantined, never silently rewritten. [How it works](#how-it-works)
+- **Independent verifier.** A goal is archived only after a separate child session, default-deny with `read`, `glob` and `grep`, reviews a structured completion claim and answers `[audit:approved]`. Verifier failures reject by default; a verifier whose prompt or permissions were changed always rejects. [Completion auditor](#completion-auditor-optional)
+- **Mutation contract.** `npm run test:mutation` applies the 93 named regressions in [`scripts/mutation-contract.mjs`](scripts/mutation-contract.mjs) (fail-open audits, lost leases, resurrected goals, …) one at a time and fails the release unless a test catches every one.
+- **Cross-platform CI.** The unit suite runs on Node 18–24 on Linux; the filesystem-sensitive lifecycle and lease tests also run on macOS and Windows. `npm run release:check` adds coverage, consumer TypeScript compilation against the packed tarball, installed-package host and tool contracts, a deterministic behavior benchmark and `npm audit`. [`ci.yml`](.github/workflows/ci.yml)
+- **One core, two hosts.** OpenCode 1 and OpenCode 2 load the same entrypoint; `src/v2-bridge.js` adapts OpenCode 2's hook domains onto the V1 hook contract, so the state machine, persistence and tools are shared code, not a fork.
+- **Real-host acceptance without paid models.** `npm run smoke:v2-host` drives a real `opencode serve` with a localhost deterministic model provider; the same approach was used for multi-hour goal soaks with injected write failures and mid-goal reloads.
+
+**Try it:** [`demo/`](demo/) is a failing test suite and one `/goal` that fixes it.
 
 This project is independently implemented for OpenCode. Product names used elsewhere identify their respective owners; no feature-parity or endorsement claim is implied.
 
 ## Compatibility snapshot
 
+This plugin relies on experimental OpenCode hooks. Re-test against the exact OpenCode build and provider/backend stack you plan to use for unattended work.
+
+
 | Surface | Status |
 |---|---|
 | Node.js | Declared support: `>=18`; CI covers Node 18, 20, 22, and 24 |
 | Operating systems | Filesystem-sensitive lifecycle tests run on Linux, macOS, and Windows |
-| Package entrypoint | Installed-tarball contracts verify both export paths, consumer TypeScript resolution, hooks, and all 11 tools |
+| Package entrypoint | Installed-tarball contracts verify both export paths, consumer TypeScript resolution, hooks, and all 11 tools (OpenCode 2 exposes 9: it drops the redundant `get_goal`/`set_goal` aliases) |
 | Provider/backend quirks | Strict-template backends require the goal block to merge into the primary `system` message; covered by regression tests |
-| OpenCode 2 | Verified against 2.0.16: plugin load, `/goal`, native agents, Plan holds, restricted independent completion auditing, foreign-verifier rejection, and safe reload recovery. See the [OpenCode 2 section](docs/compatibility.md#opencode-2) |
+| OpenCode 2 | Verified against 2.0.16, 2.0.26 and 2.2.2: plugin load, `/goal`, native agents, Plan holds, restricted independent completion auditing, foreign-verifier rejection, and safe reload recovery. On 2.2.1+ the plugin replaces the built-in `/goal` unless `commandName` is changed. See the [OpenCode 2 section](docs/compatibility.md#opencode-2) |
 
 See the [compatibility policy](docs/compatibility.md) for the supported public
 surface and versioning expectations.
@@ -65,7 +69,7 @@ OpenCode installs npm plugins itself from your config, so there is nothing to `n
 
 ```json
 {
-  "plugins": ["opencode-goal-plugin@0.11.2"]
+  "plugins": ["opencode-goal-plugin@0.11.3"]
 }
 ```
 
@@ -73,7 +77,7 @@ OpenCode installs npm plugins itself from your config, so there is nothing to `n
 
 ```json
 {
-  "plugin": ["opencode-goal-plugin@0.11.2"],
+  "plugin": ["opencode-goal-plugin@0.11.3"],
   "command": {
     "goal": {
       "description": "Set a session-scoped goal and auto-continue until complete.",
@@ -89,20 +93,24 @@ A V1 config keeps working on OpenCode 2 (the `plugin` key is normalized to `plug
 Or let the CLI add the plugin entry for you:
 
 ```sh
-opencode plugin opencode-goal-plugin@0.11.2 --global
+opencode plugin opencode-goal-plugin@0.11.3 --global
 ```
 
-Restart OpenCode after editing the config. The options form `["opencode-goal-plugin@0.11.2", { ... }]` (see [Options](#options)) pins the same way.
+Restart OpenCode after editing the config. The options form `["opencode-goal-plugin@0.11.3", { ... }]` (see [Plugin-level defaults](#plugin-level-defaults)) pins the same way.
+
+### Running alongside the built-in `/goal`
+
+OpenCode 2.2.1 and later ship a built-in `/goal`. With default options this plugin takes over `/goal` and the built-in command does not run. To keep both, set the plugin's [`commandName`](#plugin-level-defaults) (for example `"objective"`) and use one of them per session; each keeps its own state. The tested combinations are in [docs/compatibility.md](docs/compatibility.md#built-in-goal-on-opencode-221-and-later).
 
 ### Upgrading
 
-For **0.11.2**, use the config for your OpenCode version above and restart OpenCode. When moving from OpenCode 1 to 2, remove the legacy `command.goal` entry so the plugin owns `/goal`. Upgrade every process sharing the same goal state before resuming work; recovered active goals load paused and require `/goal resume`.
+For **0.11.3**, use the config for your OpenCode version above and restart OpenCode. When moving from OpenCode 1 to 2, remove the legacy `command.goal` entry so the plugin owns `/goal`. Upgrade every process sharing the same goal state before resuming work; recovered active goals load paused and require `/goal resume`.
 
-The release adds OpenCode 2 support and fixes Plan activation, stale completion approvals after objective edits, invalid completion evidence, and persistence on filesystems with capped timestamps or unsupported hard links. See the [changelog](CHANGELOG.md) for the full changes.
+OpenCode 2 support, and fixes for Plan activation, stale completion approvals after objective edits, invalid completion evidence, and persistence on filesystems with capped timestamps or unsupported hard links, arrived in 0.11.0; later 0.11.x releases are fixes only. See the [changelog](CHANGELOG.md) for each release.
 
 **Pin the version.** OpenCode resolves an unpinned `"opencode-goal-plugin"` entry to `@latest` exactly once, installs it under its package cache (`~/.cache/opencode/packages/opencode-goal-plugin@latest/` by default; `opencode debug paths` prints the cache root), and never re-resolves `latest` while that directory exists. An unpinned entry therefore stays on whichever version was first installed, indefinitely, and new releases on npm are never picked up — a bug fixed months ago can still be running locally.
 
-To upgrade, bump the pin (for example to `opencode-goal-plugin@0.11.2`) and restart OpenCode; every pinned version gets its own cache directory. If you kept an unpinned entry, delete the `opencode-goal-plugin*` directories under the cache `packages/` folder and restart. `npx opencode-goal-plugin` runs the bundled verification script, which warns when the cached copy lags the package.
+To upgrade, bump the pin (for example to `opencode-goal-plugin@0.11.3`) and restart OpenCode; every pinned version gets its own cache directory. If you kept an unpinned entry, delete the `opencode-goal-plugin*` directories under the cache `packages/` folder and restart. `npx opencode-goal-plugin` runs the bundled verification script, which warns when the cached copy lags the package.
 
 ## Usage
 
@@ -276,7 +284,7 @@ Markers must appear on their own final line. The bracketed form is canonical, bu
 
 **Effective turn count.** Each LLM turn on a real task typically takes 30–90 seconds. The default 10 auto-continues is normally the binding brake before the 15-minute window; raise `--max-turns` and/or `--max-minutes` deliberately for longer work.
 
-**Token budget.** The plugin tracks the session's context window size (`input + output + reasoning` tokens on the latest message). This matches the token count that OpenCode displays, so the numbers should be consistent. When the context window reaches the `--max-tokens` limit, the plugin sends a wrap-up prompt and stops. In high-context sessions (large codebases, long conversation history), the context can grow quickly — treat the budget as a safety brake.
+**Token budget.** The plugin tracks the session's peak context window size: the host-reported `total` for each assistant message, or `input + output + reasoning` plus cache reads and writes when no total is reported, keeping the largest value seen during the goal. This matches the token count that OpenCode displays, so the numbers should be consistent. When the context window reaches the `--max-tokens` limit, the plugin sends a wrap-up prompt and stops. In high-context sessions (large codebases, long conversation history), the context can grow quickly — treat the budget as a safety brake.
 
 **Cost budget.** `maxCostUsd` (or `--max-cost 5` per goal) pauses the goal once the cumulative cost OpenCode reports for the session's assistant messages reaches the cap, with the same wrap-up prompt as the other limits; `/goal status` shows `Cost budget: $spent/$cap` and the continuation prompt carries `cost_remaining_usd`. Enforcement depends on the provider reporting cost — an unknown cost never trips the cap — and one response may overshoot it. `/goal resume` opens a fresh budget window.
 
@@ -330,6 +338,7 @@ Override any limit for a single goal:
 | `--constraints <text>` | Constraints / non-goals to respect (alias `--non-goals`) |
 | `--mode <normal\|ordered>` | Prompt mode for one goal; `ordered` preserves step order inside its objective |
 | `--no-tool-turns <n>` | Consecutive tool-free continuation turns before pausing |
+| `--max-cost <usd>` | API cost cap in USD (see [Cost budget](#safety-limits)) |
 
 Examples:
 
@@ -342,13 +351,13 @@ Examples:
 
 ### Plugin-level defaults
 
-Pass options when registering the plugin to change the defaults for all goals. To combine with the `goal` command, merge this plugin entry into the config shown above.
+Pass options when registering the plugin to change the defaults for all goals. To combine with the `goal` command, merge this plugin entry into the config shown above, and pin the version as shown in [Install](#install). Leave `stateFilePath` unset unless you need a custom location: setting it, even to the default `.opencode/goals/state.json`, turns off legacy-path migration and the project-boundary check.
 
 ```json
 {
   "plugin": [
     [
-      "opencode-goal-plugin",
+      "opencode-goal-plugin@0.11.3",
       {
         "maxTurns": 10,
         "maxDurationMs": 900000,
@@ -361,7 +370,6 @@ Pass options when registering the plugin to change the defaults for all goals. T
         "budgetWrapupRatio": 0.8,
         "maxPromptFailures": 3,
         "persistState": true,
-        "stateFilePath": ".opencode/goals/state.json",
         "resultRetentionMs": 604800000,
         "maxStoredResults": 200
       }
@@ -376,7 +384,7 @@ Additional plugin-level options:
 - `maxRecentMessages` — how many recent session messages to scan when looking for the latest assistant turn before auto-continuing. Higher values make long, tool-heavy sessions less likely to lose the most recent assistant response.
 - `noProgressTurnsBeforePause` — grace window for low-output stalls. The plugin pauses only after this many consecutive stalled low-output turns rather than on the first one.
 - `noToolCallTurnsBeforePause` — grace window for tool-free continuation turns. The plugin pauses after this many consecutive continuation turns that produced no tool calls (anti self-chat loop). Default `2`; set the plugin option to `0` for legitimate tool-free writing/research workflows.
-- `noInterruptOnUserMessage` — when `true`, a new human message no longer pauses an active goal ("user intervention"); the goal loop keeps running and the message steers the next continuation. Because typing a message no longer stops the loop, `/goal pause` and `/goal stop` become the way to halt it. Default `false`, which pauses for `/goal resume` as before.
+- `noInterruptOnUserMessage` — when `true`, a new human message no longer pauses an active goal ("user intervention"); the goal loop keeps running and the message steers the next continuation. Because typing a message no longer stops the loop, `/goal pause` becomes the way to halt it (`/goal stop` is an alias for `/goal clear` and discards the goal). Default `false`, which pauses for `/goal resume` as before.
 - `noContinueWhileChildrenActive` — when `true`, auto-continue is deferred while the session has active child sessions (subagents, background tasks): the goal stays running but does not prompt the orchestrator until the children finish. A child counts as active only while the host reports a non-idle status for it, and each deferral is reported in `/goal status` and the lifecycle history so a waiting goal is never mistaken for a hung one. Default `false`. Enabling it adds a `children` and a `status` call to each idle the goal loop evaluates. The gate fails open — continuation proceeds — for hosts that cannot report children/status, for sessions with more concurrent children than the plugin can track, and for children that run goals of their own. Note that the gate relies on the child's own idle event to resume, so a host that never emits one leaves the goal waiting; `/goal status` reports the deferral in that case.
 - `warnTurnsRemaining` / `warnDurationMsRemaining` / `warnTokensRemaining` — thresholds at which the auto-continue prompt appends a "limits are near" warning (default `3` turns, `60000` ms, `25000` context tokens). Lower them to warn closer to the limit, or raise them to warn earlier.
 - `commandName` — the slash command the plugin owns (default `goal`). Set it to e.g. `objective` to drive the workflow with `/objective` instead of `/goal`; a leading slash is tolerated. On OpenCode 1, register the matching command name in your OpenCode `command` config; on OpenCode 2 the plugin registers the command itself and no config entry is needed (and a legacy entry with the same name is re-asserted so it cannot shadow the handler). User-facing hints (`/goal status`, `/goal resume`, …) follow the configured name.
@@ -384,7 +392,7 @@ Additional plugin-level options:
 - `registerTools` — whether the plugin registers the agent-facing goal tools (default `true`). Set to `false` to omit the programmatic tool surface entirely. See [Agent tools](#agent-tools).
 - `agentGoalAuthority` — `"full"` (default) or `"status"`. In `"status"` mode the agent tools can report on a goal but cannot replace, edit, or clear one; see [Agent tools](#agent-tools).
 - `registerAgents` — whether the config hook adds native `goal` and `goal-verify` agents (default `true`). Existing agents with those names are preserved unchanged; the plugin never changes your default agent.
-- `goalAgentName` / `verifierAgentName` — customize the registered native agent names (defaults `goal` and `goal-verify`). The verifier is a hidden subagent with a default-deny tool policy; only `read`, `glob`, and `grep` are allowed.
+- `goalAgentName` / `verifierAgentName` — customize the registered native agent names (defaults `goal` and `goal-verify`). The verifier is a hidden subagent with a default-deny tool policy that allows only `read`, `glob`, and `grep`; it can never edit files or run commands. A host may still list extra tools to it: OpenCode 2.2.2 also lists `skill`, although the verifier's rules deny every action they do not explicitly allow.
 - `sdkShape` — OpenCode session-client argument shape: `legacy` (the default generated `PluginInput` client using `{ path, body, query }`) or `flat` (clients using `{ sessionID, ... }`). Read-only `messages`/`get` calls may probe the alternate shape after an argument/schema `TypeError`; mutating calls are never replayed, so set this option correctly for embedded clients.
 - `persistState` — whether to persist active goals and recent goal results to disk.
 - `stateFilePath` — root path for the persisted session-shard namespace. Overrides the default project-local path and the `OPENCODE_GOAL_STATE_PATH` env var. Useful if you want a fixed or ephemeral location. When unset, the default root is `<cwd>/.opencode/goals/state.json`; shards are written below `<stateFilePath>.sessions/` (see the persistence section above).
@@ -401,8 +409,8 @@ In addition to the `/goal` command, the plugin registers the same workflow as ca
 
 Registered tools:
 
-- `goal_status`, `goal_set`, `goal_pause`, `goal_resume`, `goal_block`, and `goal_complete` are the canonical narrow operations. They return compact versioned JSON envelopes so agents can branch reliably without parsing prose.
-- `get_goal`, `get_goal_history`, `set_goal`, `update_goal`, and `clear_goal` remain compatibility aliases with their existing text responses.
+- `goal_status`, `goal_set`, `goal_pause`, `goal_resume`, `goal_block`, and `goal_complete` are the canonical narrow operations. They return compact versioned JSON envelopes (`ok`, `operation`, error `code`) so agents can branch on the outcome without parsing prose; `goal_status` carries the goal's details as text in `message`.
+- `get_goal`, `get_goal_history`, `set_goal`, `update_goal`, and `clear_goal` remain compatibility aliases with their existing text responses. OpenCode 2 does not register `get_goal` or `set_goal`, which duplicate `goal_status` and `goal_set`, so it exposes 9 tools.
 
 `goal_set` and `set_goal` are explicitly constrained to user-requested goals by their descriptions. To enforce that in code, set `agentGoalAuthority: "status"`: agents may then complete, block, pause, or resume a goal and create one when none is live, but `goal_set`/`set_goal` refuse to replace an active goal, `update_goal` refuses objective changes, and `clear_goal` refuses to clear — only you, through `/goal`, `/goal add`, `/goal edit`, and `/goal clear`, can change what the goal *is*. The default `"full"` keeps the previous behavior, where a tool call can replace or rewrite the objective. `goal_complete` accepts a structured claim: a required non-empty `summary`, plus optional criterion/evidence pairs, checks (`passed`, `failed`, or `not-run`), changed files, and known limitations. Failed checks and empty criterion evidence are rejected before archival; accepted claims are serialized deterministically for the configured completion auditor. The legacy `update_goal` tool retains its string `evidence` field for compatibility.
 
@@ -463,7 +471,7 @@ Status icon, objective, auto-continues used / limit, elapsed time, and context t
 ```json
 {
   "plugin": [
-    ["opencode-goal-plugin", { "sessionTitleStatus": true }]
+    ["opencode-goal-plugin@0.11.3", { "sessionTitleStatus": true }]
   ]
 }
 ```
@@ -501,7 +509,7 @@ Run `/goal resume` after switching back to an executing agent to start the work.
 ```json
 {
   "plugin": [
-    ["opencode-goal-plugin", { "restrictedAgents": ["plan", "review"] }]
+    ["opencode-goal-plugin@0.11.3", { "restrictedAgents": ["plan", "review"] }]
   ]
 }
 ```
@@ -524,7 +532,7 @@ For `/goal status`, `/goal history`, `/goal list`, `/goal pause`, and `/goal cle
 
 The plugin still registers `experimental.chat.system.transform` as defense in depth for hosts that invoke it. Real OpenCode 1.17.15 and 1.18.10 do not call that hook, so the command-control protections above are deliberately self-contained. Other OpenCode plugin hooks may change between versions.
 
-On OpenCode 2.0.16, independent completion auditing leaves its verifier child sessions retained: the host's plugin API does not expose session removal. The verifier remains restricted to read/glob/grep tools, and the parent completes only after its verdict. See [OpenCode 2 compatibility](docs/compatibility.md#opencode-2) for the tested host behavior.
+On OpenCode 2.0.16, independent completion auditing leaves its verifier child sessions retained: the host's plugin API does not expose session removal. On 2.0.26 and later, the host exposes `session.remove` and the child is deleted after its verdict. The verifier remains restricted to read-only tools, and the parent completes only after its verdict. See [OpenCode 2 compatibility](docs/compatibility.md#opencode-2) for the tested host behavior.
 
 Distinct OpenCode sessions may own shards under the same `stateFilePath` concurrently. A second process using the same session shard remains usable in passive goal mode, but goal commands and tools are denied until it can acquire that shard. The passive process never falls back to an unpersisted copy of the same goal workflow, which avoids divergent state and last-writer-wins data loss. Use the owner, wait and retry an explicit goal control after it exits, or fork to a new session. A no-replace compatibility guard prevents an older release and the current release from both acquiring during startup; current immutable claims protect takeover and release among upgraded processes. Older processes cannot take over a guarded shard, so all processes participating in automatic same-session handoff must run the current release.
 
@@ -545,7 +553,7 @@ Do not paste `state.json`, its ledger, or verbose logs into a public issue witho
 
 ## Local development
 
-Point OpenCode at the source file directly for local testing:
+**OpenCode 1** loads the source file directly from config (add the `goal` command entry from [Install](#install) as well):
 
 ```json
 {
@@ -553,15 +561,21 @@ Point OpenCode at the source file directly for local testing:
 }
 ```
 
-Keep test files outside OpenCode's auto-loaded plugin directory — OpenCode will attempt to load plugin-like files it finds there.
+**OpenCode 2** rejects a `file:` entry that points at a single file: it logs a warning (`configured plugin path must be a directory`, or `ENOTDIR` for a relative path), loads nothing, and on 2.2.1 and later the built-in `/goal` keeps answering, so the mistake is easy to miss. Load a checkout through the project's auto-loaded plugin directory instead. In the project you are testing in, create `.opencode/plugins/goal.js` containing:
 
-A `file://` entry loads the source as-is, so the checkout needs its `node_modules` (`npm ci`) for the `zod` import to resolve; copying `src/goal-plugin.js` somewhere on its own will fail to load. Use the npm package for anything but development.
+```js
+export { default } from "file:///absolute/path/to/opencode-goal-plugin/src/goal-plugin.js"
+```
+
+No `plugins` config entry is needed for it. A packed tarball also loads from config on OpenCode 2: run `npm pack` in the checkout, then set `"plugins": ["file:/absolute/path/to/opencode-goal-plugin-0.11.3.tgz"]`.
+
+Either way the checkout needs its `node_modules` (`npm ci`) for the `zod` import to resolve; copying `src/goal-plugin.js` somewhere on its own will fail to load. Put nothing else in `.opencode/plugins/`: OpenCode loads every plugin-like file it finds there. Use the npm package for anything but development.
 
 ### Smoke-test checklist
 
 1. Run `npm run smoke` to verify the package export path and `/goal` command hook without a model call.
 2. Install or file-load the plugin in a temporary OpenCode config.
-3. Add a `goal` command with `"template": "$ARGUMENTS"`.
+3. On OpenCode 1, add a `goal` command with `"template": "$ARGUMENTS"` (OpenCode 2 needs no command entry).
 4. Run `/goal status` — should report no active goal.
 5. Run `/goal inspect this repo and stop immediately with [goal:blocked] if you need user input`.
 6. Verify `/goal status`, `/goal pause`, `/goal resume`, and `/goal clear` behave as expected.

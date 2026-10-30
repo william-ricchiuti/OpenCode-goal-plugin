@@ -8,9 +8,9 @@ assignees: ""
 
 ## Environment
 
-- OpenCode version: <!-- e.g. 1.17.15 (run `opencode --version`) -->
+- OpenCode version: <!-- e.g. 2.2.2 or 1.17.15 (run `opencode --version`) -->
 - Provider / model: <!-- e.g. deepseek/deepseek-chat, opencode-go/qwen3.7-plus -->
-- opencode-goal-plugin version: <!-- e.g. 0.4.7, or "file:" local install -->
+- opencode-goal-plugin version: <!-- e.g. 0.11.3, or a local checkout -->
 - Node.js version: <!-- run `node --version` -->
 - OS: <!-- e.g. macOS 15, Ubuntu 24.04 -->
 - Relevant plugin options: <!-- e.g. commandName, completionAudit, registerTools -->

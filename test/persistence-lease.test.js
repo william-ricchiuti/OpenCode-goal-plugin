@@ -1374,3 +1374,57 @@ test("lease claims survive a transient Windows rename lock", async () => {
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+async function withWindowsClaimUnlinkFailures(failures, run) {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")
+  const realUnlink = fsPromises.unlink
+  let attempts = 0
+  try {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" })
+    fsPromises.unlink = async (path) => {
+      if (/claim-[^/\\]*\.json$/.test(String(path))) {
+        attempts += 1
+        const code = failures.shift()
+        if (code) throw Object.assign(new Error(`${code}: unlink`), { code })
+      }
+      return realUnlink(path)
+    }
+    await run(() => attempts)
+  } finally {
+    fsPromises.unlink = realUnlink
+    Object.defineProperty(process, "platform", platform)
+  }
+}
+
+test("a transient Windows claim unlink lock on release lets a same-process replacement acquire", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-lease-unlink-"))
+  const state = join(dir, "state.json")
+  try {
+    const first = await acquirePersistenceLease(state)
+    await withWindowsClaimUnlinkFailures(["EBUSY", "EPERM", "EACCES"], async (attempts) => {
+      assert.equal(await first.release(), true)
+      assert.equal(attempts(), 4)
+    })
+    assert.deepEqual(await claimNames(`${state}.lock`), [])
+    const replacement = await acquirePersistenceLease(state)
+    assert.equal(await replacement.release(), true)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("a claim unlink that stays locked on Windows still fails the release", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-lease-unlink-"))
+  const state = join(dir, "state.json")
+  try {
+    const lease = await acquirePersistenceLease(state)
+    await withWindowsClaimUnlinkFailures(Array(10).fill("EBUSY"), async (attempts) => {
+      await assert.rejects(lease.release(), { code: "EBUSY" })
+      assert.equal(attempts(), 6)
+    })
+    assert.equal((await claimNames(`${state}.lock`)).length, 1)
+    assert.equal(await lease.release(), true)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

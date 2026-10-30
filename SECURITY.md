@@ -2,8 +2,9 @@
 
 ## Supported Versions
 
-Security fixes are provided for the latest published version only. Users should
-upgrade to the newest patch release before reporting a vulnerability.
+The project is in maintenance mode. Security fixes, if any, are made against the
+latest published version only; older versions receive no backports. Reports remain
+welcome through the private channel below, but there is no response-time commitment.
 
 ## Reporting a Vulnerability
 
