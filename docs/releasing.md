@@ -8,9 +8,10 @@ artifact after all checks pass.
 
 1. Start from a clean branch based on `main`.
 2. Update the version in `package.json` and `package-lock.json` together, and
-   the pinned `opencode-goal-plugin@X.Y.Z` in the README install section and
-   `examples/opencode.json` (OpenCode never refreshes an unpinned plugin, so
-   the docs must show a pin).
+   every pinned `opencode-goal-plugin@X.Y.Z` in `README.md`, `docs/compatibility.md`,
+   `examples/opencode.json` and `examples/opencode.v2.json` (OpenCode never
+   refreshes an unpinned plugin, so the docs must show a pin; `git grep -n
+   'opencode-goal-plugin@'` finds them all).
 3. Move relevant entries from `Unreleased` into a dated changelog section.
 4. Run `npm ci` followed by `npm run release:check`.
 5. Inspect `npm pack --json` and the generated tarball before publishing.

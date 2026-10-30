@@ -206,30 +206,31 @@ export interface GoalPluginOptions {
   noContinueWhileChildrenActive?: boolean
 
   /**
-   * Fraction (between 0 and 1, exclusive) of any budget (turns, duration,
-   * or tokens) at which the plugin sends a one-time "wrap up" prompt
-   * nudging the model to finish before the hard limit is hit.
+   * Fraction (between 0 and 1, exclusive) of the context token budget at
+   * which the plugin sends a one-time "wrap up" prompt nudging the model to
+   * finish before the hard limit is hit. Turn and duration limits use the
+   * `warn*Remaining` warnings instead.
    * @default 0.8
    */
   budgetWrapupRatio?: number
 
   /**
    * Number of remaining auto-continue turns at which a limit-approaching
-   * warning is included in status output.
+   * warning is appended to the auto-continue prompt.
    * @default 3
    */
   warnTurnsRemaining?: number
 
   /**
    * Remaining duration, in milliseconds, at which a limit-approaching
-   * warning is included in status output.
+   * warning is appended to the auto-continue prompt.
    * @default 60000
    */
   warnDurationMsRemaining?: number
 
   /**
    * Remaining context tokens at which a limit-approaching warning is
-   * included in status output.
+   * appended to the auto-continue prompt.
    * @default 25000
    */
   warnTokensRemaining?: number
@@ -317,7 +318,8 @@ export interface GoalPluginOptions {
    * Whether the plugin registers the agent-facing goal tools
    * (canonical `goal_status`, `goal_set`, `goal_pause`, `goal_resume`,
    * `goal_block`, `goal_complete`, plus legacy `get_goal`,
-   * `get_goal_history`, `set_goal`, `update_goal`, `clear_goal`).
+   * `get_goal_history`, `set_goal`, `update_goal`, `clear_goal`). OpenCode 2
+   * does not register `get_goal` or `set_goal`, which duplicate canonical tools.
    * Canonical tools return versioned JSON envelopes. The tools are registered
    * by default from dependencies included with this package; set this to
    * `false` to omit the tool surface.
@@ -337,7 +339,12 @@ export interface GoalPluginOptions {
    */
   agentGoalAuthority?: "full" | "status"
 
-  /** Register collision-safe native `goal` and `goal-verify` agents through OpenCode's config hook. */
+  /**
+   * Register collision-safe native `goal` and `goal-verify` agents through
+   * OpenCode's config hook. `completionAudit: true` requires this to stay
+   * enabled, and then fails if an agent with the verifier's name already exists.
+   * @default true
+   */
   registerAgents?: boolean
 
   /**
