@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- On Windows, retry removing the persistence lease claim on release when the unlink fails with `EPERM`, `EACCES` or `EBUSY`, with the same 10 ms to 160 ms backoff as the 0.11.2 rename retry. One such failure left the instance's own claim behind, and because the owner process is always alive to itself, a same-process replacement after an OpenCode 2 location reload stayed passive until OpenCode restarted. A claim that stays locked past the retries still fails the release as before; other platforms are unchanged.
+
 ## 0.11.2 — 2026-10-29
 
 - On Windows, retry the atomic rename behind goal state and persistence lease saves when it fails with `EPERM`, `EACCES` or `EBUSY`, waiting 10 ms and doubling up to 160 ms (about 0.3 s at most). Windows refuses to rename over a file another process has open, such as antivirus, an indexer or anything reading `state.json`, and one such failure on the save before an auto-continue paused the goal with `continuation claim persistence failed` until a manual `/goal resume`. In a soak that made 3% of state renames fail this way, this cut paused goals from 8 to 0. A lock that outlasts the retries still fails closed as before; other platforms are unchanged.

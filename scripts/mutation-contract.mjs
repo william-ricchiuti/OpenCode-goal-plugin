@@ -408,6 +408,13 @@ const mutants = [
     test: "test/persistence-lease.test.js",
   },
   {
+    name: "Windows claim unlinks retry transient handle locks",
+    file: "src/persistence-lease.js",
+    from: "    await withTransientRetry(() => fs.unlink(claimPath), {\n      platform: process.platform,",
+    to: "    await withTransientRetry(() => fs.unlink(claimPath), {\n      platform: \"linux\",",
+    test: "test/persistence-lease.test.js",
+  },
+  {
     name: "bounded owner records tolerate legal short reads",
     file: "src/persistence-lease.js",
     from: "  while (bytesReadTotal < buffer.length) {",
