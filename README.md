@@ -1,39 +1,33 @@
 # opencode-goal-plugin
 
 [![npm version](https://img.shields.io/npm/v/opencode-goal-plugin)](https://www.npmjs.com/package/opencode-goal-plugin)
-[![npm downloads](https://img.shields.io/npm/dm/opencode-goal-plugin)](https://www.npmjs.com/package/opencode-goal-plugin)
 [![CI](https://github.com/william-ricchiuti/OpenCode-goal-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/william-ricchiuti/OpenCode-goal-plugin/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/william-ricchiuti/OpenCode-goal-plugin/actions/workflows/codeql.yml/badge.svg)](https://github.com/william-ricchiuti/OpenCode-goal-plugin/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> **Status: maintenance only.** OpenCode includes a built-in `/goal` command as of [v2.2.1](https://github.com/anomalyco/opencode/releases/tag/v2.2.1) ([#59437](https://github.com/anomalyco/opencode/pull/59437)). On OpenCode 2.2.1 and later, the built-in command is the better choice for most users. This plugin remains available for OpenCode 1 and earlier OpenCode 2 hosts, and for what the built-in does not do: evidence-gated completion with an independent read-only verifier, multiple goals and ordered sequences, configurable turn, time, token and cost limits, agent tools, and Plan-mode holds. If both are installed, the plugin takes over `/goal` and the built-in command does not run; to keep both, set the plugin's [`commandName`](#plugin-level-defaults) (for example `"objective"`) and use one of them per session. Bug and security fixes only; no new features.
+A `/goal` command for [OpenCode](https://opencode.ai/): set an objective, walk away, and the plugin keeps the agent working until it proves the goal is done, reports a blocker, or hits a limit you set.
 
-A session-scoped `/goal` workflow for [OpenCode](https://opencode.ai/).
+> [!IMPORTANT]
+> **Maintenance only.** OpenCode ships its own `/goal` as of [v2.2.1](https://github.com/anomalyco/opencode/releases/tag/v2.2.1) (2026-10-29, [#59437](https://github.com/anomalyco/opencode/pull/59437)). On 2.2.1 and later, use the built-in command unless you need what it does not do: evidence-gated completion with an independent read-only verifier, multiple goals and ordered sequences, configurable turn, time, token and cost limits, agent tools, and Plan-mode holds. Bug and security fixes only; no new features. Running both side by side: see [Install](#running-alongside-the-built-in-goal).
 
-Set a goal and the plugin keeps it in context, auto-continues the session whenever the assistant goes idle, and stops when the goal is marked complete, a blocker is reported, or a safety limit is reached.
-
-Compatibility: this plugin relies on experimental OpenCode hooks. Re-test against the exact OpenCode build and provider/backend stack you plan to use for unattended work.
-
-## What it provides
-
-- Session-scoped goals that remain visible across turns and compaction.
-- Guarded auto-continuation with turn, duration, token, no-progress, and no-tool-call limits.
-- Project-local restart recovery backed by persisted state and a bounded lifecycle ledger.
-- Evidence-gated completion with an optional independent, fail-closed verifier.
-- Explicit `active`, `paused`, and `blocked` status plus transition-only lifecycle notices.
-- Canonical agent tools, collision-safe goal/verifier agents, multiple goals, and ordered goal sequences.
+**Why it existed.** From May to October 2026 OpenCode had no way to run an objective unattended. This plugin filled that gap for OpenCode 1 and 2, and was used for multi-hour autonomous runs in which no model could declare itself finished without evidence.
 
 ## Engineering highlights
 
+- **Fail-closed persistence.** Atomic state writes, an append-only lifecycle ledger for recovery, and a per-session lease built on immutable claim files. A second process on the same session stays passive instead of writing a diverging copy; unknown or corrupt layouts are quarantined, never silently rewritten. [How it works](#how-it-works)
+- **Independent verifier.** A goal is archived only after a separate child session, default-deny with `read`, `glob` and `grep`, reviews a structured completion claim and answers `[audit:approved]`. Verifier failures reject by default; a verifier whose prompt or permissions were changed always rejects. [Completion auditor](#completion-auditor-optional)
+- **Mutation contract.** `npm run test:mutation` applies the 93 named regressions in [`scripts/mutation-contract.mjs`](scripts/mutation-contract.mjs) (fail-open audits, lost leases, resurrected goals, …) one at a time and fails the release unless a test catches every one.
+- **Cross-platform CI.** The unit suite runs on Node 18–24 on Linux; the filesystem-sensitive lifecycle and lease tests also run on macOS and Windows. `npm run release:check` adds coverage, consumer TypeScript compilation against the packed tarball, installed-package host and tool contracts, a deterministic behavior benchmark and `npm audit`. [`ci.yml`](.github/workflows/ci.yml)
 - **One core, two hosts.** OpenCode 1 and OpenCode 2 load the same entrypoint; `src/v2-bridge.js` adapts OpenCode 2's hook domains onto the V1 hook contract, so the state machine, persistence and tools are shared code, not a fork.
-- **Tests that check the tests.** Unit and model-based lifecycle tests, plus a mutation contract (`npm run test:mutation`) that applies each critical regression listed in `scripts/mutation-contract.mjs` (fail-open audits, lost leases, resurrected goals, …) and fails the release unless a test catches every one.
-- **Fail-closed persistence.** Atomic state writes, an append-only lifecycle ledger for recovery, and a per-session lease built on immutable claim files. A second process stays passive instead of writing a diverging copy; unknown or corrupt layouts are quarantined, never silently rewritten.
-- **Release gate.** `npm run release:check` adds coverage, consumer TypeScript compilation against the packed tarball, installed-package host and tool contracts, a deterministic behavior benchmark and `npm audit`. CI runs Node 18–24 on Linux, macOS and Windows.
 - **Real-host acceptance without paid models.** `npm run smoke:v2-host` drives a real `opencode serve` with a localhost deterministic model provider; the same approach was used for multi-hour goal soaks with injected write failures and mid-goal reloads.
+
+**Try it:** [`demo/`](demo/) is a failing test suite and one `/goal` that fixes it.
 
 This project is independently implemented for OpenCode. Product names used elsewhere identify their respective owners; no feature-parity or endorsement claim is implied.
 
 ## Compatibility snapshot
+
+This plugin relies on experimental OpenCode hooks. Re-test against the exact OpenCode build and provider/backend stack you plan to use for unattended work.
+
 
 | Surface | Status |
 |---|---|
@@ -103,6 +97,10 @@ opencode plugin opencode-goal-plugin@0.11.3 --global
 ```
 
 Restart OpenCode after editing the config. The options form `["opencode-goal-plugin@0.11.3", { ... }]` (see [Plugin-level defaults](#plugin-level-defaults)) pins the same way.
+
+### Running alongside the built-in `/goal`
+
+OpenCode 2.2.1 and later ship a built-in `/goal`. With default options this plugin takes over `/goal` and the built-in command does not run. To keep both, set the plugin's [`commandName`](#plugin-level-defaults) (for example `"objective"`) and use one of them per session; each keeps its own state. The tested combinations are in [docs/compatibility.md](docs/compatibility.md#built-in-goal-on-opencode-221-and-later).
 
 ### Upgrading
 
@@ -555,7 +553,7 @@ Do not paste `state.json`, its ledger, or verbose logs into a public issue witho
 
 ## Local development
 
-Point OpenCode at the source file directly for local testing:
+**OpenCode 1** loads the source file directly from config (add the `goal` command entry from [Install](#install) as well):
 
 ```json
 {
@@ -563,9 +561,15 @@ Point OpenCode at the source file directly for local testing:
 }
 ```
 
-Keep test files outside OpenCode's auto-loaded plugin directory — OpenCode will attempt to load plugin-like files it finds there.
+**OpenCode 2** rejects a `file:` entry that points at a single file: it logs a warning (`configured plugin path must be a directory`, or `ENOTDIR` for a relative path), loads nothing, and on 2.2.1 and later the built-in `/goal` keeps answering, so the mistake is easy to miss. Load a checkout through the project's auto-loaded plugin directory instead. In the project you are testing in, create `.opencode/plugins/goal.js` containing:
 
-A `file://` entry loads the source as-is, so the checkout needs its `node_modules` (`npm ci`) for the `zod` import to resolve; copying `src/goal-plugin.js` somewhere on its own will fail to load. Use the npm package for anything but development.
+```js
+export { default } from "file:///absolute/path/to/opencode-goal-plugin/src/goal-plugin.js"
+```
+
+No `plugins` config entry is needed for it. A packed tarball also loads from config on OpenCode 2: run `npm pack` in the checkout, then set `"plugins": ["file:/absolute/path/to/opencode-goal-plugin-0.11.3.tgz"]`.
+
+Either way the checkout needs its `node_modules` (`npm ci`) for the `zod` import to resolve; copying `src/goal-plugin.js` somewhere on its own will fail to load. Put nothing else in `.opencode/plugins/`: OpenCode loads every plugin-like file it finds there. Use the npm package for anything but development.
 
 ### Smoke-test checklist
 

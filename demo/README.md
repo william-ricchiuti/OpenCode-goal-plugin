@@ -25,13 +25,31 @@ agent verifies the suite passes and reports evidence-backed completion.
 
    You should see 2 failing tests — `add(2, 3)` returns `-1` instead of `5`.
 
-2. Launch OpenCode in this directory. `demo/opencode.json` already points
-   the plugin at the source file (`file:../src/goal-plugin.js`) and
-   registers the `goal` command, so no install step is needed:
+2. Launch OpenCode in this directory.
+
+   On **OpenCode 1**, `demo/opencode.json` already points the plugin at the
+   source file (`file:../src/goal-plugin.js`) and registers the `goal`
+   command, so no install step is needed:
 
    ```sh
    opencode
    ```
+
+   On **OpenCode 2**, that `file:` entry is ignored with a
+   `failed to load plugin … ENOTDIR: not a directory` warning in the log,
+   and on 2.2.1 and later OpenCode's built-in `/goal` would answer instead
+   of this plugin.
+   Create `demo/.opencode/plugins/goal.js` first, containing one line:
+
+   ```js
+   export { default } from "../../../src/goal-plugin.js"
+   ```
+
+   then run `opencode` as above. The `command` block in `demo/opencode.json`
+   is for OpenCode 1; OpenCode 2 re-asserts the plugin's own command over it
+   and logs a warning, which deleting the block silences. In both cases the
+   checkout needs its `node_modules` (`npm ci` at the repo root) so the
+   plugin's `zod` import resolves.
 
 3. Set the goal. If this `demo/` directory sits inside a larger checkout
    (e.g. you cloned the whole plugin repo), be specific about scope —

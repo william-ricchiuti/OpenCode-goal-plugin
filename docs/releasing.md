@@ -37,9 +37,9 @@ Confirm the registry digest and unpacked contents match the locally reviewed
 artifact before drafting the GitHub release notes. Never rebuild or edit an
 artifact after it has been published; prepare a new patch release instead.
 
-## Trusted publishing
+## Trusted publishing (not planned)
 
-For a future fully automated publish, configure npm Trusted Publishing for this
+The project is in maintenance mode and no automated publish is planned. If one were ever added: configure npm Trusted Publishing for this
 repository and a narrowly scoped GitHub Actions workflow, keep `id-token: write`
 only on the publish job, require the release environment, and publish with
 provenance. Do not add a long-lived npm token to repository secrets.

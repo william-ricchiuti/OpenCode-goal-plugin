@@ -81,9 +81,11 @@ No LLM call is required to verify the plugin loads correctly — run
 `npm run verify` first. To check marker compliance and hook behavior for a
 specific provider/model:
 
-1. Point an OpenCode config at the plugin (see
-   [Local development](../README.md#local-development) in the README) and,
-   on OpenCode 1, register the `goal` command.
+1. Point OpenCode at the plugin (see
+   [Local development](../README.md#local-development) in the README; on
+   OpenCode 2 use the `.opencode/plugins/` file or a packed tarball, since a
+   `file:` path to the source file is ignored) and, on OpenCode 1, register
+   the `goal` command.
 2. Launch OpenCode against the model you want to test:
    ```sh
    opencode -m <provider>/<model>
