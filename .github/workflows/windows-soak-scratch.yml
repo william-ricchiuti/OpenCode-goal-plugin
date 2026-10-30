@@ -1,0 +1,57 @@
+# Scratch only: final-pass Windows goal soak. Never merge this branch.
+name: Windows goal soak (scratch)
+
+on:
+  push:
+    branches: [wr/final-pass-windows-soak-scratch]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    name: Soak OpenCode ${{ matrix.opencode }} (EPERM ${{ matrix.inject }})
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        opencode: ["2.2.2", "2.0.26"]
+        inject: ["0", "0.03"]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Install isolated OpenCode host
+        shell: bash
+        run: npm install --prefix "$RUNNER_TEMP/oc" --ignore-scripts --no-audit --no-fund @opencode/cli@${{ matrix.opencode }} @opencode/plugin@${{ matrix.opencode }}
+      - name: Live acceptance (owned and foreign verifier)
+        shell: bash
+        env:
+          OPENCODE_V2_RUNTIME_DIR: ${{ runner.temp }}/oc
+          OPENCODE_V2_BINARY: ${{ runner.temp }}/oc/node_modules/@opencode/cli-windows-x64/bin/opencode.exe
+        run: |
+          node scripts/live-v2-host.mjs
+          GOAL_V2_FOREIGN_VERIFIER=1 node scripts/live-v2-host.mjs
+      - name: Goal soak (20 min, reload every 5th goal)
+        shell: bash
+        env:
+          OPENCODE_V2_RUNTIME_DIR: ${{ runner.temp }}/oc
+          INJECT_EPERM: ${{ matrix.inject }}
+          OUT_DIR: ${{ runner.temp }}/soak-out
+        run: node _agent/windows-soak/goal-soak.mjs src "win-${{ matrix.opencode }}-${{ matrix.inject }}" 20 | tee "$RUNNER_TEMP/soak.log"
+      - name: Upload soak artifacts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: soak-${{ matrix.opencode }}-${{ matrix.inject }}
+          path: |
+            ${{ runner.temp }}/soak-out
+            ${{ runner.temp }}/soak.log
