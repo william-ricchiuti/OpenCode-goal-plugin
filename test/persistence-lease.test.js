@@ -774,7 +774,11 @@ test("simultaneous stale observers cannot both acquire the replacement lease", a
       .map((result) => result.value)
     assert.equal(leases.length, 1, "exactly one overlapping stale reclaimer must win")
     const rejected = results.find((result) => result.status === "rejected")
-    assert.equal(isPersistenceLeaseContendedError(rejected?.reason), true)
+    assert.equal(
+      isPersistenceLeaseContendedError(rejected?.reason),
+      true,
+      `the losing reclaimer must reject as contended, got ${rejected?.reason?.code ?? rejected?.reason?.name ?? "no rejection"}: ${rejected?.reason?.message ?? ""}`,
+    )
 
     const mirror = JSON.parse(await readFile(lock, "utf8"))
     assert.deepEqual(mirror, sentinel)
@@ -1395,6 +1399,79 @@ async function withWindowsClaimUnlinkFailures(failures, run) {
     Object.defineProperty(process, "platform", platform)
   }
 }
+
+test("claim reads retry a Windows pending-delete handle instead of failing the acquisition", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-lease-pending-delete-"))
+  const state = join(dir, "state.json")
+  const lock = `${state}.lock`
+  await createV2LeaseDirectory(lock)
+  const staleToken = "00000000-0000-4000-8000-000000000001"
+  await writeFile(
+    join(persistenceLeaseInternals.claimDirectoryPathFor(lock), persistenceLeaseInternals.claimNameFor(staleToken)),
+    JSON.stringify({ protocol: 2, token: staleToken, pid: 2_147_483_647, hostname: hostname(), createdAt: 0 }),
+  )
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")
+  const realOpen = fsPromises.open
+  const realLstat = fsPromises.lstat
+  let injected = { open: 0, lstat: 0 }
+  try {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" })
+    fsPromises.lstat = async (path, ...rest) => {
+      if (injected.lstat === 0 && String(path).includes(staleToken)) {
+        injected.lstat += 1
+        throw Object.assign(new Error("EPERM: operation not permitted, lstat"), { code: "EPERM" })
+      }
+      return realLstat(path, ...rest)
+    }
+    fsPromises.open = async (path, ...rest) => {
+      if (injected.open === 0 && String(path).includes(staleToken)) {
+        injected.open += 1
+        throw Object.assign(new Error("EPERM: operation not permitted, open"), { code: "EPERM" })
+      }
+      return realOpen(path, ...rest)
+    }
+    const lease = await acquirePersistenceLease(state)
+    assert.deepEqual(injected, { open: 1, lstat: 1 })
+    assert.deepEqual(await claimNames(lock), [persistenceLeaseInternals.claimNameFor(lease.owner.token)])
+    assert.equal(await lease.release(), true)
+  } finally {
+    fsPromises.open = realOpen
+    fsPromises.lstat = realLstat
+    Object.defineProperty(process, "platform", platform)
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("a claim read permission error fails the acquisition at once outside Windows", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-lease-claim-eperm-"))
+  const state = join(dir, "state.json")
+  const lock = `${state}.lock`
+  await createV2LeaseDirectory(lock)
+  const staleToken = "00000000-0000-4000-8000-000000000002"
+  await writeFile(
+    join(persistenceLeaseInternals.claimDirectoryPathFor(lock), persistenceLeaseInternals.claimNameFor(staleToken)),
+    JSON.stringify({ protocol: 2, token: staleToken, pid: 2_147_483_647, hostname: hostname(), createdAt: 0 }),
+  )
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")
+  const realOpen = fsPromises.open
+  let calls = 0
+  try {
+    Object.defineProperty(process, "platform", { ...platform, value: "linux" })
+    fsPromises.open = async (path, ...rest) => {
+      if (String(path).includes(staleToken)) {
+        calls += 1
+        throw Object.assign(new Error("EPERM: operation not permitted, open"), { code: "EPERM" })
+      }
+      return realOpen(path, ...rest)
+    }
+    await assert.rejects(acquirePersistenceLease(state), { code: "EPERM" })
+    assert.equal(calls, 1)
+  } finally {
+    fsPromises.open = realOpen
+    Object.defineProperty(process, "platform", platform)
+    await rm(dir, { recursive: true, force: true })
+  }
+})
 
 test("a transient Windows claim unlink lock on release lets a same-process replacement acquire", async () => {
   const dir = await mkdtemp(join(tmpdir(), "goal-lease-unlink-"))

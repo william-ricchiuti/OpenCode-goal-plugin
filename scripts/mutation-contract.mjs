@@ -422,6 +422,13 @@ const mutants = [
     test: "test/persistence-lease.test.js",
   },
   {
+    name: "Windows claim reads retry pending-delete handles",
+    file: "src/persistence-lease.js",
+    from: "  const retry = (operation) => withTransientRetry(operation, { platform: process.platform,",
+    to: "  const retry = (operation) => withTransientRetry(operation, { platform: \"linux\",",
+    test: "test/persistence-lease.test.js",
+  },
+  {
     name: "bounded owner records tolerate legal short reads",
     file: "src/persistence-lease.js",
     from: "  while (bytesReadTotal < buffer.length) {",
