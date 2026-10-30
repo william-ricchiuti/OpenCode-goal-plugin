@@ -42,6 +42,12 @@ export const MARKER_KEY = "opencode-goal-plugin"
 export const GOAL_COMMAND_DESCRIPTION =
   "Run the durable goal workflow (set, status, pause, resume, clear)."
 
+/**
+ * Error code for a verifier whose identity or permissions differ from the
+ * owned definition. The auditor rejects it under every failure policy.
+ */
+export const VERIFIER_INTEGRITY_ERROR_CODE = "GOAL_VERIFIER_INTEGRITY"
+
 const AGENT_ALIAS_ACTIONS = Object.freeze({
   bash: ["shell"],
   task: ["subagent"],
@@ -117,6 +123,7 @@ function toErrorInfo(error) {
   return {
     name: error?.name || "Error",
     message: error?.message || String(error),
+    ...(error?.code === VERIFIER_INTEGRITY_ERROR_CODE ? { code: error.code } : {}),
   }
 }
 
@@ -441,7 +448,9 @@ async function assertVerifierOwnership(ctx, name) {
   const expected = translateV1Agent(name, config.agent[name])
   if (!actual || actual.system !== expected.system ||
       !permissionsOnlyNarrow(actual.permissions, expected.permissions)) {
-    throw new Error(`completionAudit cannot safely use agent ${JSON.stringify(name)}; verifier ownership or permissions were not confirmed`)
+    const error = new Error(`completionAudit cannot safely use agent ${JSON.stringify(name)}; verifier ownership or permissions were not confirmed`)
+    error.code = VERIFIER_INTEGRITY_ERROR_CODE
+    throw error
   }
 }
 

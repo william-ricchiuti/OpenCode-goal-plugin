@@ -7770,6 +7770,19 @@ test("buildAuditPrompt frames the goal and asks for a verdict marker", () => {
   assert.match(prompt, /\[audit:rejected\]/)
 })
 
+test("buildAuditPrompt gives the verifier the whole structured claim", () => {
+  const claim = serializeCompletionClaim({
+    summary: "HEAD-SUMMARY-MARKER all tests pass",
+    criteria: Array.from({ length: 6 }, (_, i) => ({ criterion: `criterion ${i}`, evidence: ["e".repeat(400)] })),
+  })
+  assert.equal(claim.ok, true)
+  assert.ok(claim.evidence.length > 2000)
+  const prompt = buildAuditPrompt({ condition: "ship it" }, claim.evidence)
+  assert.match(prompt, /HEAD-SUMMARY-MARKER/)
+  assert.match(prompt, /criterion 0/)
+  assert.match(prompt, /criterion 5/)
+})
+
 test("an approving auditor archives the goal", async () => {
   const { hooks } = await createHooks({
     messages: async () => ({
@@ -7906,6 +7919,17 @@ test("createChildSessionAuditor requires an explicit policy to approve operation
   const providerFailure = await createChildSessionAuditor(throwingClient)(context)
   assert.equal(providerFailure.approved, false)
   assert.match(providerFailure.reason, /provider unavailable/)
+
+  // A child linked to another parent is an integrity failure, not an outage.
+  const foreignChild = {
+    session: {
+      create: async () => ({ id: "someone-elses-session", parentID: "other-parent" }),
+      prompt: async () => ({ parts: [textPart("[audit:approved]")] }),
+    },
+  }
+  const unlinked = await createChildSessionAuditor(foreignChild, { failurePolicy: "approve" })(context)
+  assert.equal(unlinked.approved, false)
+  assert.match(unlinked.reason, /parent relationship was not preserved/)
 
   assert.throws(
     () => createChildSessionAuditor({}, { failurePolicy: "sometimes" }),
