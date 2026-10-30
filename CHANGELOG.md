@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Only affects users who set `auditorOptions.failurePolicy: "approve"`: a completion verifier whose prompt or permissions differ from the plugin's own `goal-verify` definition on OpenCode 2, or a verifier child session linked to a different parent session, was treated as an operational failure and auto-approved. These integrity failures now always reject; an unavailable API, missing child-session ID, provider error or timeout still follows the configured policy.
+- Give the built-in completion verifier the whole completion claim, up to the 8000-character claim limit. It was cut to the last 1000 characters, so a structured `goal_complete` claim lost its summary and early criteria before the verifier saw it.
 
 ## 0.11.2 — 2026-10-29
 

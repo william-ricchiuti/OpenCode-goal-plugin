@@ -7694,6 +7694,19 @@ test("buildAuditPrompt frames the goal and asks for a verdict marker", () => {
   assert.match(prompt, /\[audit:rejected\]/)
 })
 
+test("buildAuditPrompt gives the verifier the whole structured claim", () => {
+  const claim = serializeCompletionClaim({
+    summary: "HEAD-SUMMARY-MARKER all tests pass",
+    criteria: Array.from({ length: 6 }, (_, i) => ({ criterion: `criterion ${i}`, evidence: ["e".repeat(400)] })),
+  })
+  assert.equal(claim.ok, true)
+  assert.ok(claim.evidence.length > 2000)
+  const prompt = buildAuditPrompt({ condition: "ship it" }, claim.evidence)
+  assert.match(prompt, /HEAD-SUMMARY-MARKER/)
+  assert.match(prompt, /criterion 0/)
+  assert.match(prompt, /criterion 5/)
+})
+
 test("an approving auditor archives the goal", async () => {
   const { hooks } = await createHooks({
     messages: async () => ({
