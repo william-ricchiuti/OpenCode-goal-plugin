@@ -42,6 +42,12 @@ export const MARKER_KEY = "opencode-goal-plugin"
 export const GOAL_COMMAND_DESCRIPTION =
   "Run the durable goal workflow (set, status, pause, resume, clear)."
 
+/**
+ * Error code for a verifier whose identity or permissions differ from the
+ * owned definition. The auditor rejects it under every failure policy.
+ */
+export const VERIFIER_INTEGRITY_ERROR_CODE = "GOAL_VERIFIER_INTEGRITY"
+
 const AGENT_ALIAS_ACTIONS = Object.freeze({
   bash: ["shell"],
   task: ["subagent"],
@@ -117,6 +123,7 @@ function toErrorInfo(error) {
   return {
     name: error?.name || "Error",
     message: error?.message || String(error),
+    ...(error?.code === VERIFIER_INTEGRITY_ERROR_CODE ? { code: error.code } : {}),
   }
 }
 
@@ -441,7 +448,9 @@ async function assertVerifierOwnership(ctx, name) {
   const expected = translateV1Agent(name, config.agent[name])
   if (!actual || actual.system !== expected.system ||
       !permissionsOnlyNarrow(actual.permissions, expected.permissions)) {
-    throw new Error(`completionAudit cannot safely use agent ${JSON.stringify(name)}; verifier ownership or permissions were not confirmed`)
+    const error = new Error(`completionAudit cannot safely use agent ${JSON.stringify(name)}; verifier ownership or permissions were not confirmed`)
+    error.code = VERIFIER_INTEGRITY_ERROR_CODE
+    throw error
   }
 }
 
@@ -571,6 +580,8 @@ export function createV2Client(ctx, host = createHostState(), options = ctx.opti
           try {
             const listed = unwrap(await session.list({ parentID }))
             if (Array.isArray(listed)) return listed
+            // OpenCode 2.2 pages the result as `{ data, cursor }`.
+            if (Array.isArray(listed?.data)) return listed.data
           } catch {
             // fall through to the observed map
           }
@@ -1077,6 +1088,8 @@ export function createV2Setup(goalPluginFactory) {
         hookError("command ownership check", error)
         return
       }
+      // Cleanup may have run while `command.list` was pending.
+      if (host.disposed) return
       if (!info) return
       if (info.description === GOAL_COMMAND_DESCRIPTION) return
       if (commandReasserts >= 3) {
@@ -1090,7 +1103,7 @@ export function createV2Setup(goalPluginFactory) {
         return
       }
       commandReasserts += 1
-      await ctx.command.transform((editor) => editor.add(commandDefinition))
+      await track(await ctx.command.transform((editor) => editor.add(commandDefinition)))
       later(checkCommandOwnership, 500)
     }
 

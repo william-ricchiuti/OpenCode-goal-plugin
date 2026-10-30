@@ -1,5 +1,7 @@
 import assert from "node:assert/strict"
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises"
+import fsModule, { promises as fsPromises } from "node:fs"
+import { syncBuiltinESMExports } from "node:module"
 import { homedir, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import test from "node:test"
@@ -5314,6 +5316,81 @@ test("[goal:blocked] stops the goal and preserves blocked reason in status", asy
   assert.match(statusOutput.parts[0].text, /Blocked reason: Need the API key first\./)
 })
 
+const laterTerminalEvents = (sessionID) => [
+  {
+    name: "provider error",
+    event: {
+      type: "session.error",
+      properties: { sessionID, error: { name: "APIError", data: { message: "boom" } } },
+    },
+  },
+  {
+    name: "abort",
+    event: { type: "session.error", properties: { sessionID, error: { name: "MessageAbortedError" } } },
+  },
+  {
+    name: "permission rejected",
+    event: { type: "permission.replied", properties: { sessionID, response: "reject" } },
+  },
+]
+
+test("a later error, abort or permission rejection keeps a blocked goal blocked", async (t) => {
+  for (const scenario of laterTerminalEvents("session-blocked-later")) {
+    await t.test(scenario.name, async () => {
+      const { hooks } = await createHooks({
+        messages: async () => ({ data: [message("Need the API key first.\n[goal:blocked]")] }),
+        options: { minDelayMs: 1 },
+      })
+      await hooks["command.execute.before"](
+        { command: "goal", sessionID: "session-blocked-later", arguments: "ship it" },
+        { parts: [] },
+      )
+      await hooks.event({
+        event: {
+          type: "session.status",
+          properties: { sessionID: "session-blocked-later", status: { type: "idle" } },
+        },
+      })
+      const before = currentGoal("session-blocked-later")
+      assert.equal(goalDisplayState(before), "blocked")
+      const lastStatus = before.lastStatus
+
+      await hooks.event({ event: scenario.event })
+
+      const goal = currentGoal("session-blocked-later")
+      assert.equal(goalDisplayState(goal), "blocked")
+      assert.equal(goal.stopReason, "blocked")
+      assert.equal(goal.lastStatus, lastStatus)
+    })
+  }
+})
+
+test("a later error, abort or permission rejection keeps a user-paused goal's reason", async (t) => {
+  for (const scenario of laterTerminalEvents("session-paused-later")) {
+    await t.test(scenario.name, async () => {
+      const { hooks } = await createHooks({ options: { minDelayMs: 1 } })
+      await hooks["command.execute.before"](
+        { command: "goal", sessionID: "session-paused-later", arguments: "ship it" },
+        { parts: [] },
+      )
+      await hooks["command.execute.before"](
+        { command: "goal", sessionID: "session-paused-later", arguments: "pause" },
+        { parts: [] },
+      )
+      const before = currentGoal("session-paused-later")
+      assert.equal(before.stopped, true)
+      const { stopReason, lastStatus } = before
+
+      await hooks.event({ event: scenario.event })
+
+      const goal = currentGoal("session-paused-later")
+      assert.equal(goal.stopped, true)
+      assert.equal(goal.stopReason, stopReason)
+      assert.equal(goal.lastStatus, lastStatus)
+    })
+  }
+})
+
 test("[goal:complete] without evidence is rejected and re-prompts for evidence", async () => {
   const { calls, hooks } = await createHooks({
     messages: async () => ({ data: [message("All done!\n\n[goal:complete]")] }),
@@ -7268,6 +7345,81 @@ test("corrupt primary state is quarantined and valid ledger state recovers pause
   }
 })
 
+test("appendLedgerLine starts a new line after a torn ledger tail", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-plugin-ledger-torn-"))
+  const ledgerPath = join(dir, "ledger.jsonl")
+  try {
+    const base = { sessionID: "s", goalId: "g", condition: "do the thing" }
+    assert.equal(appendLedgerLine(ledgerPath, { ...base, ts: 1, type: "set" }), true)
+    // A crash mid-append leaves a partial line without a trailing newline.
+    await writeFile(ledgerPath, JSON.stringify({ ...base, ts: 2, type: "paused" }).slice(0, 25), { flag: "a" })
+    assert.equal(appendLedgerLine(ledgerPath, { ...base, ts: 3, type: "cleared" }), true)
+    const entries = await readLedgerEntries(ledgerPath)
+    assert.deepEqual(entries.map((entry) => entry.type), ["set", "cleared"])
+    assert.deepEqual(reconstructGoalsFromLedger(entries), [])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("appendLedgerLine does not report a short write as a durable append", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-plugin-ledger-short-"))
+  const ledgerPath = join(dir, "ledger.jsonl")
+  const originalWriteSync = fsModule.writeSync
+  try {
+    // Each call writes at most 10 bytes, like a full disk or an interrupted write.
+    fsModule.writeSync = (fd, data, offset = 0, length) => {
+      const buffer = Buffer.isBuffer(data) ? data : Buffer.from(String(data))
+      const end = length === undefined ? buffer.length : offset + length
+      return originalWriteSync(fd, buffer, offset, Math.min(10, end - offset))
+    }
+    syncBuiltinESMExports()
+    const ok = appendLedgerLine(ledgerPath, { ts: 1, sessionID: "s", goalId: "g", type: "completed" })
+    fsModule.writeSync = originalWriteSync
+    syncBuiltinESMExports()
+    const raw = await readFile(ledgerPath, "utf8")
+    if (ok) {
+      assert.ok(raw.endsWith("\n"), `append reported durable but wrote ${JSON.stringify(raw)}`)
+      assert.equal((await readLedgerEntries(ledgerPath))[0]?.type, "completed")
+    }
+  } finally {
+    fsModule.writeSync = originalWriteSync
+    syncBuiltinESMExports()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("invalid primary state is quarantined even when the ledger has nothing to recover", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-ledger-invalid-noop-"))
+  const stateFilePath = join(dir, "state.json")
+  const client = {
+    app: { log: async () => {} },
+    session: { messages: async () => ({ data: [] }), promptAsync: async () => ({}) },
+  }
+  let first
+  let second
+  try {
+    first = await GoalPlugin({ client }, { persistState: true, stateFilePath, registerTools: false })
+    await runGoal(first, "invalid-noop", "finish this objective")
+    await runGoal(first, "invalid-noop", "clear")
+    await first.dispose()
+    first = null
+    const sessionPath = sessionStatePath(stateFilePath, "invalid-noop")
+    const futureState = JSON.stringify({ version: 99, goals: [{ precious: true }], results: [] })
+    await writeFile(sessionPath, futureState)
+
+    second = await GoalPlugin({ client }, { persistState: true, stateFilePath, registerTools: false })
+    await runGoal(second, "invalid-noop", "status")
+    const quarantined = (await readdir(dirname(sessionPath))).find((name) => name.startsWith("state.json.corrupt."))
+    assert.ok(quarantined, "invalid state was overwritten without a quarantine copy")
+    assert.equal(await readFile(join(dirname(sessionPath), quarantined), "utf8"), futureState)
+  } finally {
+    await first?.dispose()
+    await second?.dispose()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test("completed archives survive a persistence round-trip", async () => {
   const dir = await mkdtemp(join(tmpdir(), "goal-archive-restart-"))
   const stateFilePath = join(dir, "state.json")
@@ -7693,6 +7845,19 @@ test("buildAuditPrompt frames the goal and asks for a verdict marker", () => {
   assert.match(prompt, /\[audit:rejected\]/)
 })
 
+test("buildAuditPrompt gives the verifier the whole structured claim", () => {
+  const claim = serializeCompletionClaim({
+    summary: "HEAD-SUMMARY-MARKER all tests pass",
+    criteria: Array.from({ length: 6 }, (_, i) => ({ criterion: `criterion ${i}`, evidence: ["e".repeat(400)] })),
+  })
+  assert.equal(claim.ok, true)
+  assert.ok(claim.evidence.length > 2000)
+  const prompt = buildAuditPrompt({ condition: "ship it" }, claim.evidence)
+  assert.match(prompt, /HEAD-SUMMARY-MARKER/)
+  assert.match(prompt, /criterion 0/)
+  assert.match(prompt, /criterion 5/)
+})
+
 test("an approving auditor archives the goal", async () => {
   const { hooks } = await createHooks({
     messages: async () => ({
@@ -7829,6 +7994,17 @@ test("createChildSessionAuditor requires an explicit policy to approve operation
   const providerFailure = await createChildSessionAuditor(throwingClient)(context)
   assert.equal(providerFailure.approved, false)
   assert.match(providerFailure.reason, /provider unavailable/)
+
+  // A child linked to another parent is an integrity failure, not an outage.
+  const foreignChild = {
+    session: {
+      create: async () => ({ id: "someone-elses-session", parentID: "other-parent" }),
+      prompt: async () => ({ parts: [textPart("[audit:approved]")] }),
+    },
+  }
+  const unlinked = await createChildSessionAuditor(foreignChild, { failurePolicy: "approve" })(context)
+  assert.equal(unlinked.approved, false)
+  assert.match(unlinked.reason, /parent relationship was not preserved/)
 
   assert.throws(
     () => createChildSessionAuditor({}, { failurePolicy: "sometimes" }),
@@ -8458,6 +8634,56 @@ test("agent clearGoal tool records a 'cleared' ledger event", async () => {
     const entries = await readLedgerEntries(ledgerFilePath)
     assert.ok(entries.some((e) => e.type === "cleared"))
   } finally {
+    setLedgerSink(null)
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("replacing a goal records a 'replaced' ledger event so ledger recovery does not revive it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-plugin-replace-ledger-"))
+  const stateFilePath = join(dir, "state.json")
+  const client = {
+    app: { log: async () => {} },
+    session: { messages: async () => ({ data: [] }), promptAsync: async () => ({}) },
+  }
+  let first
+  let second
+  try {
+    first = await GoalPlugin({ client }, { persistState: true, stateFilePath, registerTools: false, minDelayMs: 1 })
+    // `/goal <condition>` replacing the focused goal.
+    await runGoal(first, "replace-cmd", "alpha objective one")
+    await runGoal(first, "replace-cmd", "beta objective two")
+    // `/goal sequence` replacing every live goal.
+    await runGoal(first, "replace-seq", "gamma objective three")
+    await runGoal(first, "replace-seq", "sequence delta step; epsilon step")
+    // The agent goal_set tool replacing the focused goal.
+    await runGoal(first, "replace-tool", "status")
+    const handlers = buildAgentToolHandlers({ defaultGoalOptions: normalizeOptions(), persist: async () => true })
+    await handlers.setGoal("replace-tool", { objective: "zeta objective five" })
+    await handlers.setGoal("replace-tool", { objective: "eta objective six" })
+    await first.dispose()
+    first = null
+
+    for (const sessionID of ["replace-cmd", "replace-seq", "replace-tool"]) {
+      const entries = await readLedgerEntries(sessionLedgerPath(stateFilePath, sessionID))
+      assert.ok(entries.some((e) => e.type === "replaced"), sessionID)
+      // A torn state file forces ledger-only recovery on the next start.
+      await writeFile(sessionStatePath(stateFilePath, sessionID), "{\"version\":1,\"go")
+    }
+
+    second = await GoalPlugin({ client }, { persistState: true, stateFilePath, registerTools: false, minDelayMs: 1 })
+    for (const sessionID of ["replace-cmd", "replace-seq", "replace-tool"]) {
+      await runGoal(second, sessionID, "status")
+    }
+    assert.deepEqual(listSessionGoals("replace-cmd").map(({ condition }) => condition), ["beta objective two"])
+    assert.deepEqual(
+      listSessionGoals("replace-seq").map(({ condition }) => condition).sort(),
+      ["delta step", "epsilon step"],
+    )
+    assert.deepEqual(listSessionGoals("replace-tool").map(({ condition }) => condition), ["eta objective six"])
+  } finally {
+    await first?.dispose()
+    await second?.dispose()
     setLedgerSink(null)
     await rm(dir, { recursive: true, force: true })
   }
@@ -10517,5 +10743,45 @@ test("a 2038-capped filesystem supports public goal creation and durable recover
     await hooks?.dispose()
     t.mock.restoreAll()
     await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("goal state saves ride out a transient Windows rename lock", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-plugin-rename-"))
+  const stateFilePath = join(dir, "state.json")
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")
+  const realRename = fsPromises.rename
+  const logs = []
+  let injected = 0
+  try {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" })
+    fsPromises.rename = async (from, to) => {
+      // Fail the first two session snapshot renames, as a Windows lock would.
+      if (injected < 2 && String(to).includes(".sessions") && String(to).endsWith("state.json")) {
+        injected += 1
+        throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" })
+      }
+      return realRename(from, to)
+    }
+    const client = {
+      app: { log: async (input) => logs.push(input) },
+      session: {
+        messages: async () => ({ data: [message("still working")] }),
+        promptAsync: async () => ({}),
+      },
+    }
+    const hooks = await GoalPlugin({ client }, { persistState: true, stateFilePath, minDelayMs: 1 })
+    await hooks["command.execute.before"](
+      { command: "goal", sessionID: "session-rename", arguments: "ship it" },
+      { parts: [] },
+    )
+    assert.ok(injected > 0, "the state snapshot rename was exercised")
+    const persisted = JSON.parse(await readFile(sessionStatePath(stateFilePath, "session-rename"), "utf8"))
+    assert.equal(persisted.goals.some((goal) => goal.condition === "ship it"), true)
+    assert.equal(JSON.stringify(logs).includes("Failed to persist"), false)
+  } finally {
+    fsPromises.rename = realRename
+    Object.defineProperty(process, "platform", platform)
+    await rm(dir, { recursive: true, force: true })
   }
 })

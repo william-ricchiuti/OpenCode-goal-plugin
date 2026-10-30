@@ -15,6 +15,7 @@ import {
   utimes,
   writeFile,
 } from "node:fs/promises"
+import { promises as fsPromises } from "node:fs"
 import { hostname, tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawn } from "node:child_process"
@@ -25,6 +26,7 @@ import {
   PERSISTENCE_LEASE_CONTENDED,
   PersistenceLeaseContendedError,
   persistenceLeaseInternals,
+  renameWithTransientRetry,
 } from "../src/persistence-lease.js"
 
 // Every test in this file waits on real filesystem locking, and several of the
@@ -1297,6 +1299,131 @@ test("ENOSYS hard-link failures are classified and leave no guard or claim", asy
       },
     ), { code: "ERR_GOAL_PERSISTENCE_LEASE_HARDLINK" })
     assert.deepEqual(await readdir(dir), [])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+function renameStub(failures) {
+  const calls = []
+  const rename = async (from, to) => {
+    calls.push([from, to])
+    const code = failures.shift()
+    if (code) throw Object.assign(new Error(`${code}: rename`), { code })
+  }
+  return { calls, rename }
+}
+
+const NO_DELAYS = [0, 0, 0, 0, 0]
+
+test("transient Windows rename errors are retried until the rename succeeds", async () => {
+  const { calls, rename } = renameStub(["EPERM", "EBUSY", "EACCES"])
+  await renameWithTransientRetry("a.tmp", "a", { platform: "win32", rename, delaysMs: NO_DELAYS })
+  assert.equal(calls.length, 4)
+})
+
+test("a rename that stays locked on Windows still fails after the retries", async () => {
+  const { calls, rename } = renameStub(Array(10).fill("EPERM"))
+  await assert.rejects(
+    renameWithTransientRetry("a.tmp", "a", { platform: "win32", rename, delaysMs: NO_DELAYS }),
+    { code: "EPERM" },
+  )
+  assert.equal(calls.length, NO_DELAYS.length + 1)
+})
+
+test("non-transient rename errors are not retried on Windows", async () => {
+  const { calls, rename } = renameStub(["ENOENT"])
+  await assert.rejects(
+    renameWithTransientRetry("a.tmp", "a", { platform: "win32", rename, delaysMs: NO_DELAYS }),
+    { code: "ENOENT" },
+  )
+  assert.equal(calls.length, 1)
+})
+
+test("permission errors fail at once outside Windows", async () => {
+  for (const platform of ["linux", "darwin"]) {
+    const { calls, rename } = renameStub(["EPERM"])
+    await assert.rejects(
+      renameWithTransientRetry("a.tmp", "a", { platform, rename, delaysMs: NO_DELAYS }),
+      { code: "EPERM" },
+    )
+    assert.equal(calls.length, 1)
+  }
+})
+
+test("lease claims survive a transient Windows rename lock", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-lease-rename-"))
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")
+  const realRename = fsPromises.rename
+  let injected = 0
+  try {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" })
+    fsPromises.rename = async (from, to) => {
+      if (injected === 0 && String(to).includes("claim-")) {
+        injected += 1
+        throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" })
+      }
+      return realRename(from, to)
+    }
+    const lease = await acquirePersistenceLease(join(dir, "state.json"))
+    assert.equal(injected, 1)
+    assert.equal(await lease.release(), true)
+  } finally {
+    fsPromises.rename = realRename
+    Object.defineProperty(process, "platform", platform)
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+async function withWindowsClaimUnlinkFailures(failures, run) {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")
+  const realUnlink = fsPromises.unlink
+  let attempts = 0
+  try {
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" })
+    fsPromises.unlink = async (path) => {
+      if (/claim-[^/\\]*\.json$/.test(String(path))) {
+        attempts += 1
+        const code = failures.shift()
+        if (code) throw Object.assign(new Error(`${code}: unlink`), { code })
+      }
+      return realUnlink(path)
+    }
+    await run(() => attempts)
+  } finally {
+    fsPromises.unlink = realUnlink
+    Object.defineProperty(process, "platform", platform)
+  }
+}
+
+test("a transient Windows claim unlink lock on release lets a same-process replacement acquire", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-lease-unlink-"))
+  const state = join(dir, "state.json")
+  try {
+    const first = await acquirePersistenceLease(state)
+    await withWindowsClaimUnlinkFailures(["EBUSY", "EPERM", "EACCES"], async (attempts) => {
+      assert.equal(await first.release(), true)
+      assert.equal(attempts(), 4)
+    })
+    assert.deepEqual(await claimNames(`${state}.lock`), [])
+    const replacement = await acquirePersistenceLease(state)
+    assert.equal(await replacement.release(), true)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test("a claim unlink that stays locked on Windows still fails the release", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "goal-lease-unlink-"))
+  const state = join(dir, "state.json")
+  try {
+    const lease = await acquirePersistenceLease(state)
+    await withWindowsClaimUnlinkFailures(Array(10).fill("EBUSY"), async (attempts) => {
+      await assert.rejects(lease.release(), { code: "EBUSY" })
+      assert.equal(attempts(), 6)
+    })
+    assert.equal((await claimNames(`${state}.lock`)).length, 1)
+    assert.equal(await lease.release(), true)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

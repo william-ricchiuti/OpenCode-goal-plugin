@@ -8,9 +8,10 @@ artifact after all checks pass.
 
 1. Start from a clean branch based on `main`.
 2. Update the version in `package.json` and `package-lock.json` together, and
-   the pinned `opencode-goal-plugin@X.Y.Z` in the README install section and
-   `examples/opencode.json` (OpenCode never refreshes an unpinned plugin, so
-   the docs must show a pin).
+   every pinned `opencode-goal-plugin@X.Y.Z` in `README.md`, `docs/compatibility.md`,
+   `examples/opencode.json` and `examples/opencode.v2.json` (OpenCode never
+   refreshes an unpinned plugin, so the docs must show a pin; `git grep -n
+   'opencode-goal-plugin@'` finds them all).
 3. Move relevant entries from `Unreleased` into a dated changelog section.
 4. Run `npm ci` followed by `npm run release:check`.
 5. Inspect `npm pack --json` and the generated tarball before publishing.
@@ -36,9 +37,9 @@ Confirm the registry digest and unpacked contents match the locally reviewed
 artifact before drafting the GitHub release notes. Never rebuild or edit an
 artifact after it has been published; prepare a new patch release instead.
 
-## Trusted publishing
+## Trusted publishing (not planned)
 
-For a future fully automated publish, configure npm Trusted Publishing for this
+The project is in maintenance mode and no automated publish is planned. If one were ever added: configure npm Trusted Publishing for this
 repository and a narrowly scoped GitHub Actions workflow, keep `id-token: write`
 only on the publish job, require the release environment, and publish with
 provenance. Do not add a long-lived npm token to repository secrets.

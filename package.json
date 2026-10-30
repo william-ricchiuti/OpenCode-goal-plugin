@@ -1,6 +1,6 @@
 {
   "name": "opencode-goal-plugin",
-  "version": "0.11.1",
+  "version": "0.11.3",
   "description": "Durable, guarded goal workflows for OpenCode.",
   "type": "module",
   "main": "./src/goal-plugin.js",
@@ -76,6 +76,6 @@
     "typescript": "7.0.2"
   },
   "dependencies": {
-    "zod": "4.6.5"
+    "zod": "4.6.7"
   }
 }

@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve `opencode-goal-plugin`.
+**This project is in maintenance mode.** OpenCode ships a built-in `/goal` as of v2.2.1, so this plugin accepts bug and security fixes only; feature requests and feature pull requests will be closed. If you depend on behavior the built-in command lacks, fork it: the code is MIT and every check below runs offline.
 
 ## Development
 
@@ -49,9 +49,9 @@ Before publishing or tagging a release, follow [the release process](docs/releas
 - perform at least one manual OpenCode smoke test if hook behavior changed
 - refresh compatibility notes if the tested OpenCode surface changed
 
-## Pull Requests
+## Pull requests (bug and security fixes only)
 
-Keep pull requests focused. Include:
+Open an issue first so the fix can be confirmed in scope. Keep pull requests focused. Include:
 
 - what changed
 - why it changed
