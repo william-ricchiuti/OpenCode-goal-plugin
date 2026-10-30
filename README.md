@@ -69,7 +69,7 @@ OpenCode installs npm plugins itself from your config, so there is nothing to `n
 
 ```json
 {
-  "plugins": ["opencode-goal-plugin@0.11.3"]
+  "plugins": ["opencode-goal-plugin@0.11.4"]
 }
 ```
 
@@ -77,7 +77,7 @@ OpenCode installs npm plugins itself from your config, so there is nothing to `n
 
 ```json
 {
-  "plugin": ["opencode-goal-plugin@0.11.3"],
+  "plugin": ["opencode-goal-plugin@0.11.4"],
   "command": {
     "goal": {
       "description": "Set a session-scoped goal and auto-continue until complete.",
@@ -93,10 +93,10 @@ A V1 config keeps working on OpenCode 2 (the `plugin` key is normalized to `plug
 Or let the CLI add the plugin entry for you:
 
 ```sh
-opencode plugin opencode-goal-plugin@0.11.3 --global
+opencode plugin opencode-goal-plugin@0.11.4 --global
 ```
 
-Restart OpenCode after editing the config. The options form `["opencode-goal-plugin@0.11.3", { ... }]` (see [Plugin-level defaults](#plugin-level-defaults)) pins the same way.
+Restart OpenCode after editing the config. The options form `["opencode-goal-plugin@0.11.4", { ... }]` (see [Plugin-level defaults](#plugin-level-defaults)) pins the same way.
 
 ### Running alongside the built-in `/goal`
 
@@ -104,13 +104,13 @@ OpenCode 2.2.1 and later ship a built-in `/goal`. With default options this plug
 
 ### Upgrading
 
-For **0.11.3**, use the config for your OpenCode version above and restart OpenCode. When moving from OpenCode 1 to 2, remove the legacy `command.goal` entry so the plugin owns `/goal`. Upgrade every process sharing the same goal state before resuming work; recovered active goals load paused and require `/goal resume`.
+For **0.11.4**, use the config for your OpenCode version above and restart OpenCode. When moving from OpenCode 1 to 2, remove the legacy `command.goal` entry so the plugin owns `/goal`. Upgrade every process sharing the same goal state before resuming work; recovered active goals load paused and require `/goal resume`.
 
 OpenCode 2 support, and fixes for Plan activation, stale completion approvals after objective edits, invalid completion evidence, and persistence on filesystems with capped timestamps or unsupported hard links, arrived in 0.11.0; later 0.11.x releases are fixes only. See the [changelog](CHANGELOG.md) for each release.
 
 **Pin the version.** OpenCode resolves an unpinned `"opencode-goal-plugin"` entry to `@latest` exactly once, installs it under its package cache (`~/.cache/opencode/packages/opencode-goal-plugin@latest/` by default; `opencode debug paths` prints the cache root), and never re-resolves `latest` while that directory exists. An unpinned entry therefore stays on whichever version was first installed, indefinitely, and new releases on npm are never picked up — a bug fixed months ago can still be running locally.
 
-To upgrade, bump the pin (for example to `opencode-goal-plugin@0.11.3`) and restart OpenCode; every pinned version gets its own cache directory. If you kept an unpinned entry, delete the `opencode-goal-plugin*` directories under the cache `packages/` folder and restart. `npx opencode-goal-plugin` runs the bundled verification script, which warns when the cached copy lags the package.
+To upgrade, bump the pin (for example to `opencode-goal-plugin@0.11.4`) and restart OpenCode; every pinned version gets its own cache directory. If you kept an unpinned entry, delete the `opencode-goal-plugin*` directories under the cache `packages/` folder and restart. `npx opencode-goal-plugin` runs the bundled verification script, which warns when the cached copy lags the package.
 
 ## Usage
 
@@ -357,7 +357,7 @@ Pass options when registering the plugin to change the defaults for all goals. T
 {
   "plugin": [
     [
-      "opencode-goal-plugin@0.11.3",
+      "opencode-goal-plugin@0.11.4",
       {
         "maxTurns": 10,
         "maxDurationMs": 900000,
@@ -471,7 +471,7 @@ Status icon, objective, auto-continues used / limit, elapsed time, and context t
 ```json
 {
   "plugin": [
-    ["opencode-goal-plugin@0.11.3", { "sessionTitleStatus": true }]
+    ["opencode-goal-plugin@0.11.4", { "sessionTitleStatus": true }]
   ]
 }
 ```
@@ -509,7 +509,7 @@ Run `/goal resume` after switching back to an executing agent to start the work.
 ```json
 {
   "plugin": [
-    ["opencode-goal-plugin@0.11.3", { "restrictedAgents": ["plan", "review"] }]
+    ["opencode-goal-plugin@0.11.4", { "restrictedAgents": ["plan", "review"] }]
   ]
 }
 ```
@@ -567,7 +567,7 @@ Do not paste `state.json`, its ledger, or verbose logs into a public issue witho
 export { default } from "file:///absolute/path/to/opencode-goal-plugin/src/goal-plugin.js"
 ```
 
-No `plugins` config entry is needed for it. A packed tarball also loads from config on OpenCode 2: run `npm pack` in the checkout, then set `"plugins": ["file:/absolute/path/to/opencode-goal-plugin-0.11.3.tgz"]`.
+No `plugins` config entry is needed for it. A packed tarball also loads from config on OpenCode 2: run `npm pack` in the checkout, then set `"plugins": ["file:/absolute/path/to/opencode-goal-plugin-0.11.4.tgz"]`.
 
 Either way the checkout needs its `node_modules` (`npm ci`) for the `zod` import to resolve; copying `src/goal-plugin.js` somewhere on its own will fail to load. Put nothing else in `.opencode/plugins/`: OpenCode loads every plugin-like file it finds there. Use the npm package for anything but development.
 

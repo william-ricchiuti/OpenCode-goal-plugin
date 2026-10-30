@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.11.4 — 2026-10-30
+
 - On Windows, retry a claim read that fails with `EPERM`, `EACCES` or `EBUSY` with the same 10 ms to 160 ms backoff as claim renames and unlinks. Windows keeps a directory entry for a claim another handle still holds open after it was unlinked and refuses to open it until that handle closes, so two plugin instances racing to reclaim a stale lease could end with the loser failing on a permission error instead of reporting the lease as contended (seen once on `windows-latest` CI, `test/persistence-lease.test.js` "simultaneous stale observers cannot both acquire the replacement lease"). The test now names the loser's error when it fails.
 
 ## 0.11.3 — 2026-10-29
