@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Stop ledger recovery from bringing back replaced goals. Replacing a goal with `/goal <objective>`, `goal_set` or `/goal sequence` left no terminal ledger event, so after a truncated, corrupt or wrong-version `state.json` the old goal came back as a paused goal in `/goal list`. Replacements now record a `replaced` event, which recovery treats like `completed` and `cleared`. Ledgers written before this change keep the old behavior.
+- Start a new ledger line when the last one was torn. A crash mid-append left a line without a newline, and the next event was appended onto it, so both were skipped as malformed and a later `cleared` or `completed` event could be lost.
+- Report a ledger append as durable only when every byte was written. A short write used to count as success; the append now finishes the write or reports failure.
+- Quarantine an invalid `state.json` as `state.json.corrupt.*` whenever it fails to load. It was kept only when the ledger rebuilt at least one goal; otherwise the next save overwrote it and the data was lost.
+
 ## 0.11.2 — 2026-10-29
 
 - On Windows, retry the atomic rename behind goal state and persistence lease saves when it fails with `EPERM`, `EACCES` or `EBUSY`, waiting 10 ms and doubling up to 160 ms (about 0.3 s at most). Windows refuses to rename over a file another process has open, such as antivirus, an indexer or anything reading `state.json`, and one such failure on the save before an auto-continue paused the goal with `continuation claim persistence failed` until a manual `/goal resume`. In a soak that made 3% of state renames fail this way, this cut paused goals from 8 to 0. A lock that outlasts the retries still fails closed as before; other platforms are unchanged.

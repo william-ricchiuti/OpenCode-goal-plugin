@@ -701,6 +701,13 @@ const mutants = [
     to: "hooks.tool = {}",
     test: "test/goal-plugin.test.js",
   },
+  {
+    name: "replaced goals stay terminal during ledger recovery",
+    file: "src/goal-plugin.js",
+    from: /(const LEDGER_TERMINAL_TYPES = new Set\(\[[^\]]*), "replaced"/,
+    to: "$1",
+    test: "test/goal-plugin.test.js",
+  },
 ]
 
 try {
