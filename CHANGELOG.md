@@ -9,6 +9,7 @@
 - Start a new ledger line when the last one was torn. A crash mid-append left a line without a newline, and the next event was appended onto it, so both were skipped as malformed and a later `cleared` or `completed` event could be lost.
 - Report a ledger append as durable only when every byte was written. A short write used to count as success; the append now finishes the write or reports failure.
 - Quarantine an invalid `state.json` as `state.json.corrupt.*` whenever it fails to load. It was kept only when the ledger rebuilt at least one goal; otherwise the next save overwrote it and the data was lost.
+- On Windows, retry removing the persistence lease claim on release when the unlink fails with `EPERM`, `EACCES` or `EBUSY`, with the same 10 ms to 160 ms backoff as the 0.11.2 rename retry. One such failure left the instance's own claim behind, and because the owner process is always alive to itself, a same-process replacement after an OpenCode 2 location reload stayed passive until OpenCode restarted. A claim that stays locked past the retries still fails the release as before; other platforms are unchanged.
 
 ## 0.11.2 — 2026-10-29
 

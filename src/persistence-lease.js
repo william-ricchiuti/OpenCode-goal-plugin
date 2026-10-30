@@ -251,10 +251,11 @@ function tokenFromClaimName(name) {
     : null
 }
 
-// Windows rejects a rename over a file another process holds open (antivirus,
-// indexers, a concurrent reader) with EPERM, EACCES or EBUSY until that handle
-// closes, usually within milliseconds. Retry briefly there instead of failing
-// the write. Elsewhere those codes are real permission errors and fail at once.
+// Windows rejects a rename over, or an unlink of, a file another process holds
+// open (antivirus, indexers, a concurrent reader) with EPERM, EACCES or EBUSY
+// until that handle closes, usually within milliseconds. Retry briefly there
+// instead of failing the write or release. Elsewhere those codes are real
+// permission errors and fail at once.
 const TRANSIENT_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"])
 const TRANSIENT_RENAME_DELAYS_MS = Object.freeze([10, 20, 40, 80, 160])
 
@@ -263,9 +264,13 @@ export async function renameWithTransientRetry(
   to,
   { platform = process.platform, rename = fs.rename, delaysMs = TRANSIENT_RENAME_DELAYS_MS } = {},
 ) {
+  return withTransientRetry(() => rename(from, to), { platform, delaysMs })
+}
+
+async function withTransientRetry(operation, { platform, delaysMs }) {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await rename(from, to)
+      return await operation()
     } catch (error) {
       if (
         platform !== "win32" ||
@@ -450,7 +455,10 @@ async function ensureClaimDirectory(claimDirectoryPath) {
 
 async function removeUniqueClaim(claimPath) {
   try {
-    await fs.unlink(claimPath)
+    await withTransientRetry(() => fs.unlink(claimPath), {
+      platform: process.platform,
+      delaysMs: TRANSIENT_RENAME_DELAYS_MS,
+    })
     return true
   } catch (error) {
     if (error?.code === "ENOENT") return false
