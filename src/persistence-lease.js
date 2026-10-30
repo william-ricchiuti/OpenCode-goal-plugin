@@ -103,9 +103,10 @@ function persistenceLeaseHardLinkError() {
 
 function processIsAlive(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null
-  // The host process is alive by definition. Never signal it: runtimes that
-  // emulate POSIX signals on Windows may map signal 0 to a real termination,
-  // which would kill the OpenCode service silently (issue #81).
+  // The host process is alive by definition, so skip the probe. Signal 0 is
+  // only an existence check: Node and OpenCode's embedded Bun both route it
+  // through libuv, which on Windows calls GetExitCodeProcess and never
+  // terminates the target (verified on windows-latest for issue #81).
   if (pid === process.pid) return true
   try {
     process.kill(pid, 0)

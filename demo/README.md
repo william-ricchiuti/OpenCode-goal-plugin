@@ -73,7 +73,8 @@ agent verifies the suite passes and reports evidence-backed completion.
   the [compatibility table](../README.md#compatibility-snapshot)). Either
   way, the goal's state (limits, turn count, completion) is tracked
   correctly; you can always verify it directly by inspecting the
-  persisted state at `.opencode/goals/state.json` in this directory.
+  persisted state under `.opencode/goals/state.json.sessions/` in this
+  directory (one `state.json` per session).
 
 ## Resetting the demo
 
