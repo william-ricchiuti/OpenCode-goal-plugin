@@ -2,9 +2,8 @@
 
 ## Unreleased
 
-- Docs: add a maintenance-status note. OpenCode 2.2.1 ships a built-in `/goal`; with default options this plugin takes over the command and the built-in does not run, and setting `commandName` keeps both (verified on a live 2.2.2 host). Record OpenCode 2.0.26 and 2.2.2 as verified hosts alongside 2.0.16.
-- Docs: correct several claims that no longer matched the code. OpenCode 2 exposes 9 tools (not 11), the token budget is the peak context size including cache tokens, audit children are deleted on hosts with `session.remove`, per-session state lives under `state.json.sessions/`, the upgrade notes described 0.11.0 instead of the current release, `budgetWrapupRatio` applies to the token budget only, and `/goal stop` clears rather than pauses.
-- Correct the comment on the lease liveness check, and the 0.11.1 entry's reasoning: signal 0 is only an existence check under Node and OpenCode's embedded Bun, including on Windows (verified on `windows-latest` for #81), so it never terminated the OpenCode service. Skipping it for the host's own process stays as a harmless shortcut.
+## 0.11.3 — 2026-10-29
+
 - Stop ledger recovery from bringing back replaced goals. Replacing a goal with `/goal <objective>`, `goal_set` or `/goal sequence` left no terminal ledger event, so after a truncated, corrupt or wrong-version `state.json` the old goal came back as a paused goal in `/goal list`. Replacements now record a `replaced` event, which recovery treats like `completed` and `cleared`. Ledgers written before this change keep the old behavior.
 - Start a new ledger line when the last one was torn. A crash mid-append left a line without a newline, and the next event was appended onto it, so both were skipped as malformed and a later `cleared` or `completed` event could be lost.
 - Report a ledger append as durable only when every byte was written. A short write used to count as success; the append now finishes the write or reports failure.
@@ -15,6 +14,9 @@
 - Keep the recorded reason when a goal that is already stopped sees a later provider error, abort or rejected permission. A goal the assistant marked `[goal:blocked]` was relabelled `paused` with `provider error`, `user interrupted` or `permission rejected` when, for example, the turn the user spent resolving the blocker failed, so `/goal status` lost the blocker. User pauses and audit rejections were overwritten the same way.
 - On OpenCode 2.2, find a goal session's existing child sessions again. 2.2 returns `session.list` as a page (`{ data, cursor }`), which the bridge did not unwrap, so `noContinueWhileChildrenActive` only saw children created while the current plugin instance was running and missed any that started before a reload. Earlier 2.0 hosts have no `session.list` in the plugin context and are unchanged.
 - On OpenCode 2, release the `/goal` registration the plugin re-asserts over a shadowing config command when the plugin is unloaded, and skip the re-assertion if the plugin was unloaded while it was checking. Real hosts already scope plugin registrations to the plugin, so this only matters for embedders.
+- Docs: add a maintenance-status note. OpenCode 2.2.1 ships a built-in `/goal`; with default options this plugin takes over the command and the built-in does not run, and setting `commandName` keeps both (verified on a live 2.2.2 host). Record OpenCode 2.0.26 and 2.2.2 as verified hosts alongside 2.0.16.
+- Docs: correct several claims that no longer matched the code. OpenCode 2 exposes 9 tools (not 11), the token budget is the peak context size including cache tokens, audit children are deleted on hosts with `session.remove`, per-session state lives under `state.json.sessions/`, the upgrade notes described 0.11.0 instead of the current release, `budgetWrapupRatio` applies to the token budget only, and `/goal stop` clears rather than pauses.
+- Correct the comment on the lease liveness check, and the 0.11.1 entry's reasoning: signal 0 is only an existence check under Node and OpenCode's embedded Bun, including on Windows (verified on `windows-latest` for #81), so it never terminated the OpenCode service. Skipping it for the host's own process stays as a harmless shortcut.
 
 ## 0.11.2 — 2026-10-29
 

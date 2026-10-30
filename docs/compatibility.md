@@ -228,18 +228,18 @@ entry:
 
 ```jsonc
 // OpenCode 1
-{ "plugin": ["opencode-goal-plugin@0.11.2"],
+{ "plugin": ["opencode-goal-plugin@0.11.3"],
   "command": { "goal": { "template": "$ARGUMENTS", "agent": "build" } } }
 
 // OpenCode 2 (the command entry is not needed and should be omitted)
-{ "plugins": ["opencode-goal-plugin@0.11.2"] }
+{ "plugins": ["opencode-goal-plugin@0.11.3"] }
 
 // OpenCode 2 with plugin options: repeat the exact package spec in object
 // form so the project entry — and its options — takes precedence over a
 // same-package entry in the user-level config (verified on 2.0.16; a
 // different spec, such as a local path, does not replace it).
 { "plugins": [
-  { "package": "opencode-goal-plugin@0.11.2", "options": { "sessionTitleStatus": true } }
+  { "package": "opencode-goal-plugin@0.11.3", "options": { "sessionTitleStatus": true } }
 ] }
 ```
 
