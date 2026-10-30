@@ -161,9 +161,16 @@ async function readBoundedOwnerFile(handle, expectedInfo) {
 }
 
 async function readOwnerRecord(ownerPath) {
+  // Windows keeps a directory entry for a file another handle still holds
+  // open after it was unlinked (libuv opens with delete sharing), and answers
+  // lstat/open on that entry with EPERM or EACCES until the handle closes. Two
+  // acquirers racing over a stale claim hit this window, so give claim reads
+  // the same brief retry as renames and unlinks instead of failing the
+  // acquisition with a non-contended error.
+  const retry = (operation) => withTransientRetry(operation, { platform: process.platform, delaysMs: TRANSIENT_RENAME_DELAYS_MS })
   let ownerInfo
   try {
-    ownerInfo = await fs.lstat(ownerPath)
+    ownerInfo = await retry(() => fs.lstat(ownerPath))
   } catch (error) {
     if (error?.code === "ENOENT") return { status: "missing", owner: null, info: null }
     throw error
@@ -183,7 +190,7 @@ async function readOwnerRecord(ownerPath) {
       fsConstants.O_RDONLY |
       (fsConstants.O_NOFOLLOW ?? 0) |
       (fsConstants.O_NONBLOCK ?? 0)
-    handle = await fs.open(ownerPath, flags)
+    handle = await retry(() => fs.open(ownerPath, flags))
     const openedInfo = await handle.stat()
     if (
       !openedInfo.isFile() ||
