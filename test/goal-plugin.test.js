@@ -5316,6 +5316,81 @@ test("[goal:blocked] stops the goal and preserves blocked reason in status", asy
   assert.match(statusOutput.parts[0].text, /Blocked reason: Need the API key first\./)
 })
 
+const laterTerminalEvents = (sessionID) => [
+  {
+    name: "provider error",
+    event: {
+      type: "session.error",
+      properties: { sessionID, error: { name: "APIError", data: { message: "boom" } } },
+    },
+  },
+  {
+    name: "abort",
+    event: { type: "session.error", properties: { sessionID, error: { name: "MessageAbortedError" } } },
+  },
+  {
+    name: "permission rejected",
+    event: { type: "permission.replied", properties: { sessionID, response: "reject" } },
+  },
+]
+
+test("a later error, abort or permission rejection keeps a blocked goal blocked", async (t) => {
+  for (const scenario of laterTerminalEvents("session-blocked-later")) {
+    await t.test(scenario.name, async () => {
+      const { hooks } = await createHooks({
+        messages: async () => ({ data: [message("Need the API key first.\n[goal:blocked]")] }),
+        options: { minDelayMs: 1 },
+      })
+      await hooks["command.execute.before"](
+        { command: "goal", sessionID: "session-blocked-later", arguments: "ship it" },
+        { parts: [] },
+      )
+      await hooks.event({
+        event: {
+          type: "session.status",
+          properties: { sessionID: "session-blocked-later", status: { type: "idle" } },
+        },
+      })
+      const before = currentGoal("session-blocked-later")
+      assert.equal(goalDisplayState(before), "blocked")
+      const lastStatus = before.lastStatus
+
+      await hooks.event({ event: scenario.event })
+
+      const goal = currentGoal("session-blocked-later")
+      assert.equal(goalDisplayState(goal), "blocked")
+      assert.equal(goal.stopReason, "blocked")
+      assert.equal(goal.lastStatus, lastStatus)
+    })
+  }
+})
+
+test("a later error, abort or permission rejection keeps a user-paused goal's reason", async (t) => {
+  for (const scenario of laterTerminalEvents("session-paused-later")) {
+    await t.test(scenario.name, async () => {
+      const { hooks } = await createHooks({ options: { minDelayMs: 1 } })
+      await hooks["command.execute.before"](
+        { command: "goal", sessionID: "session-paused-later", arguments: "ship it" },
+        { parts: [] },
+      )
+      await hooks["command.execute.before"](
+        { command: "goal", sessionID: "session-paused-later", arguments: "pause" },
+        { parts: [] },
+      )
+      const before = currentGoal("session-paused-later")
+      assert.equal(before.stopped, true)
+      const { stopReason, lastStatus } = before
+
+      await hooks.event({ event: scenario.event })
+
+      const goal = currentGoal("session-paused-later")
+      assert.equal(goal.stopped, true)
+      assert.equal(goal.stopReason, stopReason)
+      assert.equal(goal.lastStatus, lastStatus)
+    })
+  }
+})
+
 test("[goal:complete] without evidence is rejected and re-prompts for evidence", async () => {
   const { calls, hooks } = await createHooks({
     messages: async () => ({ data: [message("All done!\n\n[goal:complete]")] }),

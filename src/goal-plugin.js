@@ -4709,7 +4709,9 @@ async function createGoalPlugin({ client, directory } = {}, pluginOptions = {}) 
   ) => {
     const goal = goalStates.get(sessionID)
     if (!goal) return false
-    if (goal.stopped && goal.stopReason === reason) return false
+    // Already stopped: keep the recorded reason (blocked, user pause, audit
+    // rejection) instead of relabelling it with a later error or abort.
+    if (goal.stopped) return false
     currentRuntime().continuationControllers.get(sessionID)?.abort()
     // A goal stopping while deferred must release its watched children, or the
     // watch outlives the goal and a later child idle re-drives a dead loop.
